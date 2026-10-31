@@ -3,17 +3,20 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promise
 import os from 'node:os';
 import path from 'node:path';
 import {
-  analyseTimeline, notConfigured, parseSilences, searchTranscripts, transcriptFileName, whisperCppFromEnv,
+  analyseTimeline, notConfigured, parseSilences, searchDescriptions, searchTranscripts, transcriptFileName, whisperCppFromEnv,
   type Analysis, type SearchHit, type Transcriber, type Transcript,
 } from './ai.js';
-import { projectDuration, validateProject, type Media, type Project } from './contract.js';
+import { clipLength, projectDuration, validateProject, type Media, type Project } from './contract.js';
 import { EngineError, ffmpeg } from './ffmpeg.js';
+import { captionsFromTranscripts, subtitles, type CaptionOptions } from './captions.js';
+import { claudeFromEnv, type Describer, type FrameDescription, type Matcher, type Translator } from './claude.js';
 import { fileKey, probeMedia, progressParser, proxy, thumbnails, waveform, type ProbeResult, type Waveform } from './media.js';
 import {
-  audioFeatures, autoSwitchSegments, multicamClips, readPcm, syncAngles,
+  audioFeatures, autoSwitchSegments, multicamClips, readPcm, speakerForWords, syncAngles,
   type AudioFeatures, type MulticamSync, type SwitchOptions, type SwitchSegment,
 } from './multicam.js';
-import type { MediaClip } from './contract.js';
+import { effectOf, isTextClip, type MediaClip, type TextClip } from './contract.js';
+import { keyframesFromTrack, trackSubject, type SubjectTrack } from './reframe.js';
 import { buildGraph, type Graph, type GraphOptions, type ResolvedMedia } from './render.js';
 
 type GraphRequest = Omit<GraphOptions, 'resolve' | 'resolvePath' | 'tmpDir' | 'fontsDir'>;
@@ -46,6 +49,12 @@ export interface EngineOptions {
   /** Folder relative media paths resolve against (normally the project file's folder). */
   baseDir?: string;
   transcriber?: Transcriber;
+  /** Describes frames for visual search. Defaults to Claude when ANTHROPIC_API_KEY is set. */
+  describer?: Describer;
+  /** Translates captions. Defaults to Claude when ANTHROPIC_API_KEY is set. */
+  translator?: Translator;
+  /** Semantic matching for searchFootage({semantic: true}). Defaults to Claude when ANTHROPIC_API_KEY is set. */
+  matcher?: Matcher;
   /** Folder libass searches for fonts used by text clips. */
   fontsDir?: string;
   /** Render previews from proxies when a media item has one. */
@@ -77,12 +86,34 @@ export interface ExportOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * Splits the timeline into frame ranges of at most a minute, cutting earlier when a range would
+ * open more than 32 clips at once (fast-cut edits), so every FFmpeg graph stays small.
+ */
+export function exportChunks(project: Project, totalFrames: number, fps: number, maxSeconds = 60, maxClips = 32): Array<[number, number]> {
+  const spans = project.tracks.flatMap((t) => (t.kind === 'text' ? [] : t.clips.map((c) => [c.start, c.start + clipLength(c)] as const)));
+  const maxFrames = Math.max(1, Math.round(maxSeconds * fps));
+  const out: Array<[number, number]> = [];
+  for (let f0 = 0; f0 < totalFrames; ) {
+    let f1 = Math.min(totalFrames, f0 + maxFrames);
+    const count = (a: number, b: number) => spans.filter(([s, e]) => s < b / fps && e > a / fps).length;
+    while (f1 - f0 > fps && count(f0, f1) > maxClips) f1 = f0 + Math.max(Math.round(fps), Math.floor((f1 - f0) / 2));
+    out.push([f0, f1]);
+    f0 = f1;
+  }
+  return out;
+}
+
 const DEFAULT_FONT_DIRS = ['/System/Library/Fonts/Supplemental', '/usr/share/fonts', 'C:\\Windows\\Fonts'];
 
 export class Engine {
   readonly cacheDir: string;
   baseDir: string;
   private transcriber?: Transcriber;
+  private describer?: Describer;
+  private translator?: Translator;
+  private matcher?: Matcher;
+  private visual = new Map<string, { mediaId: string; span: number; describer: string; frames: FrameDescription[] }>();
   private fontsDir?: string;
   private useProxies: boolean;
   private media = new Map<string, Media>();
@@ -94,6 +125,10 @@ export class Engine {
     this.cacheDir = path.resolve(opts.cacheDir ?? path.join(os.tmpdir(), 'pro-video-engine'));
     this.baseDir = path.resolve(opts.baseDir ?? process.cwd());
     this.transcriber = opts.transcriber ?? whisperCppFromEnv();
+    const claude = claudeFromEnv();
+    this.describer = opts.describer ?? claude;
+    this.translator = opts.translator ?? claude;
+    this.matcher = opts.matcher ?? claude;
     this.fontsDir = opts.fontsDir ?? DEFAULT_FONT_DIRS.find((d) => existsSync(d));
     this.useProxies = opts.useProxies ?? false;
   }
@@ -119,11 +154,13 @@ export class Engine {
 
   private async register(m: Media): Promise<void> {
     this.media.set(m.id, m);
-    if (this.transcripts.has(m.id)) return;
     const abs = this.resolvePath(m.path);
     if (!existsSync(abs)) return;
-    const cached = path.join(this.cacheDir, transcriptFileName(await fileKey(abs)));
-    if (existsSync(cached)) this.transcripts.set(m.id, { ...JSON.parse(await readFile(cached, 'utf8')), mediaId: m.id });
+    const key = await fileKey(abs);
+    const cached = path.join(this.cacheDir, transcriptFileName(key));
+    if (!this.transcripts.has(m.id) && existsSync(cached)) this.transcripts.set(m.id, { ...JSON.parse(await readFile(cached, 'utf8')), mediaId: m.id });
+    const visual = path.join(this.cacheDir, 'visual', `${key}.json`);
+    if (!this.visual.has(m.id) && existsSync(visual)) this.visual.set(m.id, { ...JSON.parse(await readFile(visual, 'utf8')), mediaId: m.id });
   }
 
   resolvePath(p: string): string {
@@ -258,10 +295,94 @@ export class Engine {
     }
   }
 
-  /** Searches every transcribed media item. Results are source-file times. */
-  async searchFootage(query: string, limit = 20): Promise<SearchHit[]> {
-    const known = [...this.transcripts.values()].filter((t) => this.media.has(t.mediaId));
-    return searchTranscripts(known, query, limit);
+  /**
+   * Samples a frame every `interval` seconds and has the describer write what's on screen, so
+   * searchFootage can find visual moments. Cached per file; costs one model call per `batch` frames.
+   */
+  async indexFootage(mediaId: string, opts: { interval?: number; batch?: number; onProgress?: (f: number) => void } = {}): Promise<FrameDescription[]> {
+    const have = this.visual.get(mediaId);
+    if (have) return have.frames;
+    if (!this.describer) throw new EngineError('AI_NOT_CONFIGURED', 'no frame describer configured: set ANTHROPIC_API_KEY, or pass a describer to new Engine()');
+    const abs = this.resolvePath(this.getMedia(mediaId).path);
+    const probe = await this.probe(abs);
+    if (probe.type === 'audio') throw new EngineError('UNSUPPORTED', `${mediaId} has no picture to index`);
+    const interval = opts.interval ?? 5;
+    const batch = opts.batch ?? 8;
+    const { stdout } = await ffmpeg(['-v', 'error', '-i', abs, '-vf', `fps=1/${interval},scale=512:-2`, '-q:v', '5', '-f', 'image2pipe', '-c:v', 'mjpeg', '-'], { captureStdout: true });
+    // Split the MJPEG stream at each start-of-image marker.
+    const starts: number[] = [];
+    for (let i = 0; i + 2 < stdout.length; i++) if (stdout[i] === 0xff && stdout[i + 1] === 0xd8 && stdout[i + 2] === 0xff) starts.push(i);
+    const frames = starts.map((s, i) => ({ time: i * interval, jpeg: stdout.subarray(s, starts[i + 1] ?? stdout.length) }));
+    const out: FrameDescription[] = [];
+    for (let i = 0; i < frames.length; i += batch) {
+      out.push(...(await this.describer.describe(frames.slice(i, i + batch))));
+      opts.onProgress?.(Math.min(1, (i + batch) / frames.length));
+    }
+    const entry = { mediaId, span: interval, describer: this.describer.name, frames: out.sort((a, b) => a.time - b.time) };
+    const file = path.join(this.cacheDir, 'visual', `${await fileKey(abs)}.json`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, JSON.stringify(entry));
+    this.visual.set(mediaId, entry);
+    return entry.frames;
+  }
+
+  /**
+   * Searches what was said (transcripts) and what was seen (indexFootage). Results are source-file times.
+   * With `semantic: true` and a matcher configured, a model ranks the moments instead of keyword matching,
+   * so "someone falls in the water" also finds "slips into the pool".
+   */
+  async searchFootage(query: string, opts: number | { limit?: number; semantic?: boolean } = {}): Promise<SearchHit[]> {
+    const { limit = 20, semantic = false } = typeof opts === 'number' ? { limit: opts } : opts;
+    const transcripts = [...this.transcripts.values()].filter((t) => this.media.has(t.mediaId));
+    const visual = [...this.visual.values()].filter((v) => this.media.has(v.mediaId));
+    if (!semantic) {
+      return [...searchTranscripts(transcripts, query, limit), ...searchDescriptions(visual, query, limit)]
+        .sort((a, b) => b.score - a.score || a.time - b.time)
+        .slice(0, limit);
+    }
+    if (!this.matcher) throw new EngineError('AI_NOT_CONFIGURED', 'semantic search needs a matcher: set ANTHROPIC_API_KEY, or pass a matcher to new Engine()');
+    // Moments: each frame description, and the transcript in ~10-word chunks.
+    const moments: Array<Omit<SearchHit, 'score'>> = [];
+    for (const v of visual) for (const f of v.frames) moments.push({ mediaId: v.mediaId, time: f.time, end: f.time + v.span, text: f.text, source: 'visual' });
+    for (const t of transcripts) {
+      for (let i = 0; i < t.words.length; i += 10) {
+        const ws = t.words.slice(i, i + 10);
+        moments.push({ mediaId: t.mediaId, time: ws[0].start, end: ws[ws.length - 1].end, text: ws.map((w) => w.text).join(' '), source: 'transcript' });
+      }
+    }
+    const ranked = await this.matcher.match(query, moments.map((m, id) => ({ id, text: `[${m.source}] ${m.text}` })));
+    return ranked.sort((a, b) => b.score - a.score).slice(0, limit).map((r) => ({ ...moments[r.id], score: Math.round(r.score * 100) / 100 }));
+  }
+
+  // ---------- captions ----------
+
+  /** Caption text clips for everything said on the timeline (needs transcripts). */
+  async autoCaptions(project: Project, opts: CaptionOptions = {}): Promise<TextClip[]> {
+    await this.openProject(project);
+    return captionsFromTranscripts(project, this.transcripts, opts);
+  }
+
+  /**
+   * Returns a copy of the project with a translated copy of a text track. The translation is shown
+   * and the original is hidden, so exporting gives the translated version.
+   */
+  async translateCaptions(project: Project, language: string, opts: { trackId?: string } = {}): Promise<Project> {
+    if (!this.translator) throw new EngineError('AI_NOT_CONFIGURED', 'no translator configured: set ANTHROPIC_API_KEY, or pass a translator to new Engine()');
+    const out: Project = structuredClone(project);
+    const src = out.tracks.find((t) => t.kind === 'text' && (opts.trackId ? t.id === opts.trackId : !t.hidden));
+    if (!src) throw new EngineError('NOT_FOUND', opts.trackId ? `no text track ${opts.trackId}` : 'no visible text track to translate');
+    const clips = src.clips.filter(isTextClip);
+    const translated: string[] = [];
+    for (let i = 0; i < clips.length; i += 50) translated.push(...(await this.translator.translate(clips.slice(i, i + 50).map((c) => c.text), language)));
+    const slug = language.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    out.tracks.push({ id: `${src.id}-${slug}`, kind: 'text', clips: clips.map((c, i) => ({ ...structuredClone(c), id: `${c.id}-${slug}`, text: translated[i] })) });
+    src.hidden = true;
+    return out;
+  }
+
+  /** SRT or WebVTT text for a caption track. */
+  subtitles(project: Project, opts: { trackId?: string; format?: 'srt' | 'vtt' } = {}): string {
+    return subtitles(project, opts);
   }
 
   /** Silences, filler words (needs transcripts), cuts and pacing flags. */
@@ -273,6 +394,65 @@ export class Engine {
     const stderr = await this.withGraph(project, { from: 0, to: duration, video: false, audioFilters: [silencedetect] }, false, async (g) =>
       (await ffmpeg(['-v', 'info', ...g.args, '-map', g.audio!, '-f', 'null', '-'])).stderr);
     return analyseTimeline(project, duration, parseSilences(stderr, duration), this.transcripts);
+  }
+
+  // ---------- auto-reframe ----------
+
+  /** Where the action is in a video over time (smoothed). Cached per file. */
+  async trackSubject(mediaId: string): Promise<SubjectTrack> {
+    const abs = this.resolvePath(this.getMedia(mediaId).path);
+    const probe = await this.probe(abs);
+    if (probe.type !== 'video') throw new EngineError('UNSUPPORTED', `${mediaId} is not a video`);
+    const cached = path.join(this.cacheDir, 'subjects', `${await fileKey(abs)}.json`);
+    if (existsSync(cached)) return JSON.parse(await readFile(cached, 'utf8'));
+    const track = await trackSubject(abs, probe.duration);
+    await mkdir(path.dirname(cached), { recursive: true });
+    await writeFile(cached, JSON.stringify(track));
+    return track;
+  }
+
+  /**
+   * Returns a copy of the project at a new aspect (default 1080x1920 for Shorts) where every
+   * full-frame video clip gets a `reframe` effect that pans to follow its subject.
+   */
+  async autoReframe(project: Project, opts: { width?: number; height?: number } = {}): Promise<Project> {
+    await this.openProject(project);
+    const out: Project = structuredClone(project);
+    out.settings = { ...out.settings, width: opts.width ?? 1080, height: opts.height ?? 1920 };
+    const sizeScale = Math.sqrt((out.settings.width * out.settings.height) / (project.settings.width * project.settings.height));
+    for (const track of out.tracks) {
+      for (const c of track.clips) {
+        if (isTextClip(c)) {
+          // Keep text the same visual size relative to the new frame.
+          if (c.style?.fontSize) c.style.fontSize = Math.round(c.style.fontSize * sizeScale);
+          continue;
+        }
+        if (track.kind !== 'video' || effectOf(c, 'transform') || this.getMedia(c.mediaId).type !== 'video') continue;
+        const keyframes = keyframesFromTrack(await this.trackSubject(c.mediaId), c.in, c.out);
+        c.effects = [...(c.effects ?? []).filter((e) => e.type !== 'reframe'), { type: 'reframe', keyframes }];
+      }
+    }
+    return out;
+  }
+
+  // ---------- speaker labels ----------
+
+  /**
+   * Fills in `speaker` on a transcript using per-person mics from a multicam sync.
+   * `speakers` are the angles with a close mic on one person (default: every angle except `wide`);
+   * `names` maps them to display names, e.g. { camA: 'Host', camB: 'Guest' }.
+   */
+  async labelSpeakers(mediaId: string, sync: MulticamSync, opts: { speakers?: string[]; wide?: string; names?: Record<string, string> } = {}): Promise<Transcript> {
+    const t = await this.transcribe(mediaId);
+    const speakers = opts.speakers ?? sync.angles.map((a) => a.mediaId).filter((id) => id !== opts.wide);
+    const features = new Map<string, AudioFeatures>();
+    for (const id of speakers) features.set(id, (await this.audioFeaturesFor(id)).features);
+    const labels = speakerForWords(t.words, mediaId, sync, features, { speakers, names: opts.names });
+    const labelled: Transcript = { ...t, words: t.words.map((w, i) => ({ ...w, speaker: labels[i] })) };
+    const abs = this.resolvePath(this.getMedia(mediaId).path);
+    await writeFile(path.join(this.cacheDir, transcriptFileName(await fileKey(abs))), JSON.stringify(labelled));
+    this.transcripts.set(mediaId, labelled);
+    return labelled;
   }
 
   // ---------- multicam ----------
@@ -325,16 +505,62 @@ export class Engine {
     const output = path.resolve(opts.output ?? path.join(this.cacheDir, 'exports', `export-${p.id}-${Date.now()}.mp4`));
     await mkdir(path.dirname(output), { recursive: true });
     const partial = output.replace(/(\.\w+)?$/, '.partial$1');
-    const { fps } = project.settings;
+    const { fps, sampleRate } = project.settings;
+    const errs = validateProject(project);
+    if (errs.length) throw new EngineError('INVALID_PROJECT', errs.join('\n'));
 
-    await this.withGraph(project, { from: 0, to: duration, width: p.width, height: p.height, fit: p.fit, loudness: p.loudness }, false, async (g) => {
+    // Long timelines with many cuts are rendered in chunks: one FFmpeg graph per chunk only opens the
+    // clips inside it. Video chunks are joined without re-encoding; audio chunks are raw PCM so they join
+    // sample-exactly, then the whole soundtrack is loudness-normalised and encoded once.
+    const totalFrames = Math.round(duration * fps);
+    const chunks = exportChunks(project, totalFrames, fps);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'pve-export-'));
+    try {
+      const done = new Array<number>(chunks.length).fill(0);
+      const report = () => onProgress?.(Math.min(0.99, (0.95 * done.reduce((a, b) => a + b, 0)) / totalFrames));
       const rate = p.maxrate ? ['-maxrate', p.maxrate, '-bufsize', p.bufsize ?? p.maxrate] : [];
-      const args = ['-v', 'error', ...g.args, '-map', g.video!, '-map', g.audio!,
-        '-c:v', 'libx264', '-preset', p.x264Preset, '-crf', String(p.crf), ...rate, '-pix_fmt', 'yuv420p', '-r', String(fps),
-        '-c:a', 'aac', '-b:a', p.audioBitrate, '-ar', '48000', '-t', String(duration),
-        '-movflags', '+faststart', '-progress', 'pipe:1', '-nostats', partial];
-      await ffmpeg(args, { onStdoutLine: progressParser(duration, onProgress), signal: opts.signal });
-    });
+      const workers = Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2)));
+      let next = 0;
+      const work = async () => {
+        while (next < chunks.length) {
+          const i = next++;
+          const [f0, f1] = chunks[i];
+          const from = f0 / fps;
+          const to = f1 / fps;
+          const samples = Math.round(to * sampleRate) - Math.round(from * sampleRate);
+          await this.withGraph(project, { from, to, width: p.width, height: p.height, fit: p.fit, audioSamples: samples }, false, async (g) => {
+            const frames = f1 - f0;
+            await ffmpeg(['-v', 'error', ...g.args,
+              '-map', g.video!, '-frames:v', String(frames), '-c:v', 'libx264', '-preset', p.x264Preset, '-crf', String(p.crf), ...rate, '-pix_fmt', 'yuv420p', '-r', String(fps),
+              '-progress', 'pipe:1', '-nostats', path.join(tmp, `v${i}.mp4`),
+              '-map', g.audio!, '-c:a', 'pcm_f32le', '-ar', String(sampleRate), '-ac', '2', '-rf64', 'auto', path.join(tmp, `a${i}.wav`)],
+            {
+              signal: opts.signal,
+              onStdoutLine: (line) => {
+                const m = /^frame=(\d+)/.exec(line);
+                if (m) {
+                  done[i] = Math.min(frames, Number(m[1]));
+                  report();
+                }
+              },
+            });
+            done[i] = frames;
+            report();
+          });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(workers, chunks.length) }, work));
+
+      const list = (prefix: string, ext: string) => chunks.map((_, i) => `file '${path.join(tmp, `${prefix}${i}.${ext}`).replace(/'/g, "'\\''")}'`).join('\n');
+      await writeFile(path.join(tmp, 'v.txt'), list('v', 'mp4'));
+      await writeFile(path.join(tmp, 'a.txt'), list('a', 'wav'));
+      await ffmpeg(['-v', 'error', '-f', 'concat', '-safe', '0', '-i', path.join(tmp, 'v.txt'), '-f', 'concat', '-safe', '0', '-i', path.join(tmp, 'a.txt'),
+        '-map', '0:v', '-map', '1:a', '-c:v', 'copy',
+        '-af', `loudnorm=I=${p.loudness}:TP=-1.5:LRA=11,aresample=48000`, '-c:a', 'aac', '-b:a', p.audioBitrate, '-ar', '48000',
+        '-t', String(totalFrames / fps), '-movflags', '+faststart', partial], { signal: opts.signal });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
     await rename(partial, output);
     onProgress?.(1);
     return output;

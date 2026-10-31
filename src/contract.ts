@@ -73,7 +73,16 @@ export interface SpeedEffect {
   rate: number;
 }
 
-export type Effect = ColourEffect | CropEffect | TransformEffect | VolumeEffect | FadeEffect | SpeedEffect;
+/**
+ * Fill the canvas and pan the crop window to follow a subject, e.g. a 16:9 shot in a 9:16 Short.
+ * Keyframe times are source-file seconds; x/y are the crop window's centre as a fraction of the source frame.
+ */
+export interface ReframeEffect {
+  type: 'reframe';
+  keyframes: Array<{ t: number; x: number; y: number }>;
+}
+
+export type Effect = ColourEffect | CropEffect | TransformEffect | VolumeEffect | FadeEffect | SpeedEffect | ReframeEffect;
 
 export interface Transition {
   /** crossfade blends from the previous clip on the same track; fade comes up from what is underneath. */
@@ -221,6 +230,9 @@ export function validateProject(p: unknown): string[] {
       if (!isNum(c.in) || !isNum(c.out) || c.in < 0 || c.out <= c.in) errs.push(`${cat}: need 0 <= in < out`);
       const speed = Array.isArray(c.effects) ? c.effects.find((e: any) => e?.type === 'speed') : undefined;
       if (speed && (!isNum(speed.rate) || speed.rate <= 0)) errs.push(`${cat}: speed.rate must be > 0`);
+      const reframe = Array.isArray(c.effects) ? c.effects.find((e: any) => e?.type === 'reframe') : undefined;
+      if (reframe && (!Array.isArray(reframe.keyframes) || !reframe.keyframes.length || !reframe.keyframes.every((k: any) => isNum(k?.t) && isNum(k?.x) && isNum(k?.y))))
+        errs.push(`${cat}: reframe.keyframes must be a non-empty list of {t, x, y}`);
       if (c.transitionIn && !(['crossfade', 'fade'].includes(c.transitionIn.type) && isNum(c.transitionIn.duration) && c.transitionIn.duration > 0))
         errs.push(`${cat}.transitionIn needs type crossfade|fade and duration > 0`);
     });

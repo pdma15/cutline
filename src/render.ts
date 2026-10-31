@@ -10,6 +10,7 @@ import {
   type Media, type MediaClip, type Project, type TextClip,
 } from './contract.js';
 import { filterPath, sec } from './ffmpeg.js';
+import { piecewiseExpr } from './reframe.js';
 
 export interface ResolvedMedia {
   media: Media;
@@ -32,6 +33,8 @@ export interface GraphOptions {
   /** Target integrated loudness in LUFS, or null to leave levels alone. */
   loudness?: number | null;
   fontsDir?: string;
+  /** Exact audio length in samples (for chunked export, so chunks join sample-perfectly). */
+  audioSamples?: number;
   /** Extra audio filters after the mix (e.g. silencedetect). */
   audioFilters?: string[];
   tmpDir: string;
@@ -197,9 +200,13 @@ export async function buildGraph(project: Project, o: GraphOptions): Promise<Gra
     const L = a - p.ts; // clip-local time at window start
     const len = b - a;
     const isImage = res.media.type === 'image';
+    const srcStart = clip.in + L * rate;
+    // Seek a little early and trim back: decoders like AAC need the previous block to decode the
+    // first one correctly, so seeking straight to srcStart can smear the first few milliseconds.
+    const preroll = isImage ? 0 : Math.min(0.1, srcStart);
     const idx = isImage
       ? addInput('-loop', '1', '-framerate', String(fps), '-t', sec(len + 2 / fps), '-i', res.file)
-      : addInput('-ss', sec(clip.in + L * rate), '-t', sec((len + 2 / fps) * rate), '-i', res.file);
+      : addInput('-ss', sec(srcStart - preroll), '-t', sec((len + 2 / fps) * rate + preroll), '-i', res.file);
     const id = k++;
     const fade = effectOf(clip, 'fade');
     const fadeIn = Math.max(clip.transitionIn?.duration ?? 0, fade?.in ?? 0);
@@ -207,7 +214,7 @@ export async function buildGraph(project: Project, o: GraphOptions): Promise<Gra
     const clipLen = p.end - p.ts;
 
     if (useVideo) {
-      const vf: string[] = ['setpts=PTS-STARTPTS'];
+      const vf: string[] = [...(preroll ? [`trim=start=${sec(preroll)}`] : []), 'setpts=PTS-STARTPTS'];
       if (rate !== 1) vf.push(`setpts=PTS/${rate}`);
       vf.push(`fps=${fps}`);
       const crop = effectOf(clip, 'crop');
@@ -219,8 +226,17 @@ export async function buildGraph(project: Project, o: GraphOptions): Promise<Gra
       const s = tr?.scale ?? 1;
       const tw = even(W * s);
       const th = even(H * s);
+      const reframe = effectOf(clip, 'reframe');
+      if (reframe && !tr) {
+        // Fill the canvas and pan the crop window along the keyframes (source time -> filter-local time).
+        const toLocal = (t: number) => (t - srcStart) / rate;
+        const ex = piecewiseExpr(reframe.keyframes.map((k) => ({ t: k.t, v: k.x })), toLocal);
+        const ey = piecewiseExpr(reframe.keyframes.map((k) => ({ t: k.t, v: k.y })), toLocal);
+        vf.push(`scale=${tw}:${th}:force_original_aspect_ratio=increase`,
+          `crop=w='min(iw,${tw})':h='min(ih,${th})':x='clip((${ex})*iw-ow/2,0,iw-ow)':y='clip((${ey})*ih-oh/2,0,ih-oh)'`);
+      }
       // Placed clips (picture-in-picture) keep their whole frame; only full-frame clips fill and crop.
-      if (fit === 'cover' && !tr) vf.push(`scale=${tw}:${th}:force_original_aspect_ratio=increase`, `crop=min(iw\\,${tw}):min(ih\\,${th})`);
+      else if (fit === 'cover' && !tr) vf.push(`scale=${tw}:${th}:force_original_aspect_ratio=increase`, `crop=min(iw\\,${tw}):min(ih\\,${th})`);
       else vf.push(`scale=${tw}:${th}:force_original_aspect_ratio=decrease:force_divisible_by=2`);
       vf.push('setsar=1');
       const col = effectOf(clip, 'colour');
@@ -248,7 +264,7 @@ export async function buildGraph(project: Project, o: GraphOptions): Promise<Gra
     }
 
     if (useAudio) {
-      const af: string[] = [`aresample=${sr}`, 'aformat=sample_fmts=fltp:channel_layouts=stereo', 'asetpts=PTS-STARTPTS', ...atempo(rate), `atrim=duration=${sec(len)}`];
+      const af: string[] = [...(preroll ? [`atrim=start=${sec(preroll)}`] : []), `aresample=${sr}`, 'aformat=sample_fmts=fltp:channel_layouts=stereo', 'asetpts=PTS-STARTPTS', ...atempo(rate), `atrim=duration=${sec(len)}`];
       const gain = effectOf(clip, 'volume')?.gain;
       if (gain !== undefined && gain !== 1) af.push(`volume=${Math.max(0, gain)}`);
       const aIn = fadeIn;
@@ -304,7 +320,7 @@ export async function buildGraph(project: Project, o: GraphOptions): Promise<Gra
     const all = [aBase, ...audioLabels];
     const extra = [...(o.loudness != null ? [`loudnorm=I=${o.loudness}:TP=-1.5:LRA=11`, `aresample=${sr}`] : []), ...(o.audioFilters ?? [])];
     const post = extra.map((f) => `,${f}`).join('');
-    filters.push(`${all.join('')}amix=inputs=${all.length}:normalize=0:duration=first:dropout_transition=0,atrim=duration=${sec(D)}${post}[aout]`);
+    filters.push(`${all.join('')}amix=inputs=${all.length}:normalize=0:duration=first:dropout_transition=0,${o.audioSamples ? `apad,atrim=end_sample=${o.audioSamples}` : `atrim=duration=${sec(D)}`}${post}[aout]`);
     audio = '[aout]';
   }
 

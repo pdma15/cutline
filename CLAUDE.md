@@ -12,6 +12,9 @@ This repo is the **Engine + AI brain** half of the Pro Video Editor. It has no U
 - `src/render.ts`: `buildGraph` turns a time window of a project into one FFmpeg filtergraph. Preview frames, playback audio, export and analysis all use it, so what the App previews is what gets exported.
 - `src/ai.ts`: transcription (pluggable `Transcriber`; whisper.cpp built in), transcript search, silence/filler/pacing analysis.
 - `src/multicam.ts`: audio sync (FFT envelope correlation, then fine envelope refine), active-speaker auto-switch, segments to clips.
+- `src/reframe.ts`: subject tracking (motion + detail, zero-lag smoothing) and keyframes for the `reframe` effect.
+- `src/claude.ts`: Claude-backed `Describer` / `Translator` / `Matcher` (lazy SDK import; structured outputs; refusal fallbacks).
+- `src/captions.ts`: captions from transcripts, SRT/VTT.
 - `src/engine.ts`: the `Engine` class, which is the public API, plus export presets.
 - `src/cli.ts`: the `engine` command-line tool.
 - `scripts/make-sample.ts`: generates synthetic footage and a sample project.
@@ -24,12 +27,16 @@ This repo is the **Engine + AI brain** half of the Pro Video Editor. It has no U
 - Throw `EngineError` with a stable `code` for anything the App might show the user.
 - The bundled FFmpeg has **no drawtext**. Text renders via libass (`ass` filter) from a generated .ass file.
 - Times: project JSON and `analyse` use timeline seconds; `transcribe` and `searchFootage` use source-file seconds.
+- Export is chunked (≤60 s, ≤32 clips per FFmpeg graph). Never go back to one graph for the whole timeline: it crashes around a few hundred clips.
+- Inputs are seeked 0.1 s early and trimmed back (`preroll` in render.ts). AAC can't decode the first block after a direct seek correctly.
+- Tests use fake AI models. Never make `npm test` need a key or network.
 
 ## Commands
 
 ```bash
 npm test                                   # node:test suite, makes its own fixtures
 npm run typecheck
+npm run test:long                          # 30-min stress test
 npx tsx scripts/make-sample.ts             # examples/school/project.json + footage
 npx tsx src/cli.ts export examples/school/project.json --preset school -o out.mp4
 ```

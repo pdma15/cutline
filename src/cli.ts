@@ -22,10 +22,23 @@ Project (project.json; media paths resolve relative to it)
   export <project> [--preset youtube] [-o out.mp4]
   analyse <project>                    Silences, fillers, cuts, pacing
   transcribe <project> <mediaId>       Needs WHISPER_CPP_BIN + WHISPER_MODEL
-  search <project> <query...>          Search transcribed footage
+  search <project> <query...> [--semantic]
+                                       Search what was said and what was seen
   multicam <project> <mediaId> <mediaId...> [--wide id] [--audio id] [--min-shot 2] [-o edited.json]
                                        Sync angles by audio, cut to the active speaker;
                                        -o writes a copy of the project with the edit on new tracks
+  reframe <project> [--width 1080 --height 1920] -o vertical.json
+                                       Follow the subject into a new aspect (e.g. Shorts)
+  index <project> <mediaId> [--interval 5]
+                                       Describe frames for visual search (needs ANTHROPIC_API_KEY)
+  captions <project> [-o captioned.json] [--srt out.srt]
+                                       Captions from transcripts onto a new text track
+  translate <project> <language> [-o translated.json] [--srt out.srt]
+                                       Translate the visible caption track (needs ANTHROPIC_API_KEY)
+  subtitles <project> [--vtt] [-o out.srt]
+                                       Write the visible text track as SRT (or WebVTT)
+  speakers <project> <transcribedId> <mediaId> <mediaId...> [--wide id] [--names camA=Host,camB=Guest]
+                                       Label transcript words by whose mic is loudest
   presets                              List export presets
 
 Global: --cache <dir>  (default: system temp)`;
@@ -49,6 +62,14 @@ const print = (v: unknown) => console.log(JSON.stringify(v, null, 2));
 async function loadProject(file: string): Promise<{ project: Project; dir: string }> {
   const project = JSON.parse(await readFile(file, 'utf8'));
   return { project, dir: path.dirname(path.resolve(file)) };
+}
+
+/** Writes a derived project next to `file`, keeping media paths pointing at the same files. */
+async function writeProject(p: Project, file: string, engine: Engine) {
+  const out = path.resolve(file);
+  const copy: Project = { ...p, media: p.media.map((m) => ({ ...m, path: path.relative(path.dirname(out), engine.resolvePath(m.path)) })) };
+  await writeFile(out, JSON.stringify(copy, null, 2) + '\n');
+  return { output: out };
 }
 
 async function main() {
@@ -128,7 +149,52 @@ async function main() {
     case 'search': {
       need(2, 'search <project> <query>');
       await engine.openProject(project);
-      return print(await engine.searchFootage(args.slice(1).join(' ')));
+      return print(await engine.searchFootage(args.slice(1).join(' '), { semantic: !!flags.semantic }));
+    }
+    case 'reframe': {
+      const out = await engine.autoReframe(project, { width: str('width') ? Number(str('width')) : undefined, height: str('height') ? Number(str('height')) : undefined });
+      return print(await writeProject(out, str('o') ?? 'vertical.json', engine));
+    }
+    case 'index': {
+      need(2, 'index <project> <mediaId> [--interval 5]');
+      await engine.openProject(project);
+      const frames = await engine.indexFootage(args[1], { interval: str('interval') ? Number(str('interval')) : undefined, onProgress: (f) => process.stderr.write(`\rindex ${Math.round(f * 100)}%`) });
+      process.stderr.write('\n');
+      return print({ mediaId: args[1], frames: frames.length, preview: frames.slice(0, 5) });
+    }
+    case 'captions': {
+      const caps = await engine.autoCaptions(project);
+      const out: Project = structuredClone(project);
+      out.tracks.forEach((t) => t.kind === 'text' && (t.hidden = true));
+      out.tracks.push({ id: 'captions', kind: 'text', clips: caps });
+      if (str('srt')) await writeFile(path.resolve(str('srt')!), engine.subtitles(out));
+      return print({ captions: caps.length, ...(await writeProject(out, str('o') ?? 'captioned.json', engine)) });
+    }
+    case 'translate': {
+      need(2, 'translate <project> <language>');
+      const out = await engine.translateCaptions(project, args[1]);
+      if (str('srt')) await writeFile(path.resolve(str('srt')!), engine.subtitles(out));
+      return print(await writeProject(out, str('o') ?? `translated-${args[1].toLowerCase()}.json`, engine));
+    }
+    case 'subtitles': {
+      const text = engine.subtitles(project, { format: flags.vtt ? 'vtt' : 'srt' });
+      if (!str('o')) return void process.stdout.write(text);
+      await writeFile(path.resolve(str('o')!), text);
+      return print({ output: path.resolve(str('o')!) });
+    }
+    case 'speakers': {
+      need(4, 'speakers <project> <transcribedId> <mediaId> <mediaId...> [--wide id] [--names camA=Host,camB=Guest]');
+      await engine.openProject(project);
+      const sync = await engine.syncMulticam(args.slice(2));
+      const names = Object.fromEntries((str('names') ?? '').split(',').filter(Boolean).map((kv) => kv.split('=') as [string, string]));
+      const t = await engine.labelSpeakers(args[1], sync, { wide: str('wide'), names });
+      const turns: Array<{ speaker: string; start: number; text: string }> = [];
+      for (const w of t.words) {
+        const last = turns[turns.length - 1];
+        if (last && last.speaker === w.speaker) last.text += ` ${w.text}`;
+        else turns.push({ speaker: w.speaker, start: w.start, text: w.text });
+      }
+      return print(turns);
     }
     case 'multicam': {
       need(3, 'multicam <project> <mediaId> <mediaId...> [--wide id] [--audio id] [-o edited.json]');

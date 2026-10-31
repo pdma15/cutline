@@ -61,7 +61,7 @@ export interface SearchHit {
   end: number;
   text: string;
   score: number;
-  source: 'transcript';
+  source: 'transcript' | 'visual';
 }
 
 const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}' ]+/gu, ' ').trim();
@@ -99,6 +99,26 @@ export function searchTranscripts(transcripts: Iterable<Transcript>, query: stri
         source: 'transcript',
       });
       lastEnd = j;
+    }
+  }
+  return hits.sort((a, b) => b.score - a.score || a.time - b.time).slice(0, limit);
+}
+
+const STOP = new Set(['a', 'an', 'the', 'of', 'in', 'on', 'at', 'to', 'and', 'or', 'is', 'are', 'with', 'where', 'when', 'every', 'shot', 'shots', 'someone', 'something', 'that', 'it', 'into', 'for', 'from', 'by']);
+/** Crude stemmer: enough to match "falls"/"falling"/"fell into" style variations in descriptions. */
+const stem = (w: string) => w.replace(/(ing|ed|es|s)$/, '').replace(/(.)\1$/, '$1');
+const stems = (s: string) => tokens(s).filter((w) => !STOP.has(w)).map(stem);
+
+/** Keyword search over frame descriptions. Each description covers [time, time + span). */
+export function searchDescriptions(index: Iterable<{ mediaId: string; span: number; frames: Array<{ time: number; text: string }> }>, query: string, limit = 20): SearchHit[] {
+  const q = [...new Set(stems(query))];
+  if (!q.length) return [];
+  const hits: SearchHit[] = [];
+  for (const m of index) {
+    for (const f of m.frames) {
+      const have = new Set(stems(f.text));
+      const score = q.filter((w) => have.has(w)).length / q.length;
+      if (score >= 0.5) hits.push({ mediaId: m.mediaId, time: f.time, end: f.time + m.span, text: f.text, score: Math.round(score * 100) / 100, source: 'visual' });
     }
   }
   return hits.sort((a, b) => b.score - a.score || a.time - b.time).slice(0, limit);

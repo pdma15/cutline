@@ -8,3 +8,6 @@ examples/interview/footage/
 examples/interview/out/
 examples/interview/edited.json
 .cache/
+examples/*/vertical.json
+examples/*/captioned.json
+examples/*/translated-*.json

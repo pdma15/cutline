@@ -493,3 +493,53 @@ export function multicamClips(sync: MulticamSync, segments: SwitchSegment[], o: 
   }
   return { video, audio };
 }
+
+// ---------- speaker labels ----------
+
+/**
+ * Labels each transcript word with the person speaking, by checking which speaker's mic is loudest
+ * (relative to its own noise floor) at that moment. Needs one close mic per person, as in multicam.
+ * `transcriptAngle` is the angle whose audio was transcribed; word times are its source times.
+ */
+export function speakerForWords(
+  words: Array<{ start: number; end: number }>,
+  transcriptAngle: string,
+  sync: MulticamSync,
+  features: Map<string, AudioFeatures>,
+  o: { speakers: string[]; names?: Record<string, string>; speechDb?: number },
+): string[] {
+  const src = sync.angles.find((a) => a.mediaId === transcriptAngle);
+  if (!src) throw new EngineError('SYNC_FAILED', `${transcriptAngle} is not one of the synced angles`);
+  const speechDb = o.speechDb ?? 6;
+  const angles = o.speakers.map((id) => {
+    const a = sync.angles.find((x) => x.mediaId === id);
+    if (!a) throw new EngineError('SYNC_FAILED', `${id} is not one of the synced angles`);
+    const level = features.get(id)!.level;
+    return { a, level, floor: percentile(Array.from(level), 0.2) };
+  });
+  let last = o.names?.[o.speakers[0]] ?? o.speakers[0];
+  return words.map((w) => {
+    const r0 = src.offset + w.start * src.clockRate;
+    const r1 = src.offset + w.end * src.clockRate;
+    let best: string | null = null;
+    let bestAbove = speechDb;
+    for (const { a, level, floor } of angles) {
+      // Mean level over the word.
+      const i0 = Math.floor(toSource(a, r0) * LEVEL_RATE);
+      const i1 = Math.max(i0 + 1, Math.ceil(toSource(a, r1) * LEVEL_RATE));
+      let s = 0, n = 0;
+      for (let i = Math.max(0, i0); i < Math.min(level.length, i1); i++) {
+        s += level[i];
+        n++;
+      }
+      if (!n) continue;
+      const above = s / n - floor;
+      if (above > bestAbove) {
+        bestAbove = above;
+        best = a.mediaId;
+      }
+    }
+    if (best) last = o.names?.[best] ?? best;
+    return last;
+  });
+}
