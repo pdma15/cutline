@@ -13,6 +13,15 @@ npx tsx ../../src/cli.ts export project.json --preset school -o out/school.mp4
 npx tsx ../../src/cli.ts analyse project.json
 ```
 
+Multicam, using a synthetic three-camera interview:
+
+```bash
+npx tsx scripts/make-multicam.ts          # builds examples/interview
+cd examples/interview
+npx tsx ../../src/cli.ts multicam project.json camA camB --wide wide -o edited.json
+npx tsx ../../src/cli.ts export edited.json --preset youtube -o out/interview.mp4
+```
+
 Run `npx tsx src/cli.ts help` for every command. After `npm run build`, the same CLI is at `dist/cli.js`.
 
 ## As a library
@@ -44,7 +53,8 @@ const file  = await engine.exportProject(project, 'youtube', (f) => console.log(
 | Transcription with word timestamps | Plumbing done: whisper.cpp via `WHISPER_CPP_BIN` + `WHISPER_MODEL`, or pass any `Transcriber`. Not run against a real model yet |
 | Filler-word detection, transcript search | Done (needs transcripts) |
 | Speaker labels | Not yet (Whisper has no diarisation; every word is `S1`) |
-| Multicam audio sync and auto-switch | Not started |
+| Multicam audio sync | Done. Under 1 ms accuracy, confidence score, clock-drift measurement (drift not yet corrected) |
+| Multicam auto-switch to active speaker | Done. Mic-level based with wide shot for silence/crosstalk, 2 s minimum shot, cuts 0.2 s early |
 | Visual footage search (frame descriptions) | Not started |
 | Auto-reframe with subject tracking | Not started (Shorts preset centre-crops) |
 | Translation and dubbing | Not started (stretch) |

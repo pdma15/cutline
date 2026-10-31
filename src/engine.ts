@@ -9,6 +9,11 @@ import {
 import { projectDuration, validateProject, type Media, type Project } from './contract.js';
 import { EngineError, ffmpeg } from './ffmpeg.js';
 import { fileKey, probeMedia, progressParser, proxy, thumbnails, waveform, type ProbeResult, type Waveform } from './media.js';
+import {
+  audioFeatures, autoSwitchSegments, multicamClips, readPcm, syncAngles,
+  type AudioFeatures, type MulticamSync, type SwitchOptions, type SwitchSegment,
+} from './multicam.js';
+import type { MediaClip } from './contract.js';
 import { buildGraph, type Graph, type GraphOptions, type ResolvedMedia } from './render.js';
 
 type GraphRequest = Omit<GraphOptions, 'resolve' | 'resolvePath' | 'tmpDir' | 'fontsDir'>;
@@ -83,6 +88,7 @@ export class Engine {
   private media = new Map<string, Media>();
   private probes = new Map<string, ProbeResult>();
   private transcripts = new Map<string, Transcript>();
+  private features = new Map<string, AudioFeatures>();
 
   constructor(opts: EngineOptions = {}) {
     this.cacheDir = path.resolve(opts.cacheDir ?? path.join(os.tmpdir(), 'pro-video-engine'));
@@ -267,6 +273,48 @@ export class Engine {
     const stderr = await this.withGraph(project, { from: 0, to: duration, video: false, audioFilters: [silencedetect] }, false, async (g) =>
       (await ffmpeg(['-v', 'info', ...g.args, '-map', g.audio!, '-f', 'null', '-'])).stderr);
     return analyseTimeline(project, duration, parseSilences(stderr, duration), this.transcripts);
+  }
+
+  // ---------- multicam ----------
+
+  private async audioFeaturesFor(mediaId: string): Promise<{ file: string; features: AudioFeatures; duration: number }> {
+    const abs = this.resolvePath(this.getMedia(mediaId).path);
+    const probe = await this.probe(abs);
+    if (!probe.audio) throw new EngineError('UNSUPPORTED', `${mediaId} has no audio, so it cannot be synced or auto-switched`);
+    const key = await fileKey(abs);
+    let f = this.features.get(key);
+    if (!f) {
+      const cached = path.join(this.cacheDir, 'features', `${key}.json`);
+      if (existsSync(cached)) {
+        const j = JSON.parse(await readFile(cached, 'utf8'));
+        f = { duration: j.duration, onset: Float32Array.from(j.onset), level: Float32Array.from(j.level) };
+      } else {
+        f = audioFeatures(await readPcm(abs));
+        await mkdir(path.dirname(cached), { recursive: true });
+        const r = (a: Float32Array) => Array.from(a, (v) => Math.round(v * 1000) / 1000);
+        await writeFile(cached, JSON.stringify({ duration: f.duration, onset: r(f.onset), level: r(f.level) }));
+      }
+      this.features.set(key, f);
+    }
+    return { file: abs, features: f, duration: probe.duration || f.duration };
+  }
+
+  /** Lines up camera angles by their audio. offset = where each angle's time 0 falls in reference time. */
+  async syncMulticam(mediaIds: string[], opts: { reference?: string; maxOffset?: number } = {}): Promise<MulticamSync> {
+    const inputs = [];
+    for (const id of mediaIds) inputs.push({ mediaId: id, ...(await this.audioFeaturesFor(id)) });
+    return syncAngles(inputs, opts);
+  }
+
+  /** Cuts between synced angles to follow whoever is speaking. Returns segments and ready-to-insert clips. */
+  async autoSwitch(sync: MulticamSync, opts: SwitchOptions & { timelineStart?: number; audioFrom?: string; idPrefix?: string } = {}): Promise<{
+    segments: SwitchSegment[];
+    clips: { video: MediaClip[]; audio: MediaClip[] };
+  }> {
+    const features = new Map<string, AudioFeatures>();
+    for (const a of sync.angles) features.set(a.mediaId, (await this.audioFeaturesFor(a.mediaId)).features);
+    const segments = autoSwitchSegments(sync, features, opts);
+    return { segments, clips: multicamClips(sync, segments, opts) };
   }
 
   async exportProject(project: Project, preset: string | ExportPreset, onProgress?: (fraction: number) => void, opts: ExportOptions = {}): Promise<string> {

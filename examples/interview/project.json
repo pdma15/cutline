@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "settings": {
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "sampleRate": 48000
+  },
+  "media": [
+    {
+      "id": "camA",
+      "path": "footage/camA.mp4",
+      "proxyPath": null,
+      "duration": 22,
+      "type": "video"
+    },
+    {
+      "id": "camB",
+      "path": "footage/camB.mp4",
+      "proxyPath": null,
+      "duration": 21.63,
+      "type": "video"
+    },
+    {
+      "id": "wide",
+      "path": "footage/wide.mp4",
+      "proxyPath": null,
+      "duration": 22.7,
+      "type": "video"
+    }
+  ],
+  "tracks": [
+    {
+      "id": "v1",
+      "kind": "video",
+      "clips": []
+    },
+    {
+      "id": "a1",
+      "kind": "audio",
+      "clips": []
+    }
+  ],
+  "markers": [],
+  "comments": []
+}

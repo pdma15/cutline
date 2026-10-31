@@ -23,6 +23,9 @@ Project (project.json; media paths resolve relative to it)
   analyse <project>                    Silences, fillers, cuts, pacing
   transcribe <project> <mediaId>       Needs WHISPER_CPP_BIN + WHISPER_MODEL
   search <project> <query...>          Search transcribed footage
+  multicam <project> <mediaId> <mediaId...> [--wide id] [--audio id] [--min-shot 2] [-o edited.json]
+                                       Sync angles by audio, cut to the active speaker;
+                                       -o writes a copy of the project with the edit on new tracks
   presets                              List export presets
 
 Global: --cache <dir>  (default: system temp)`;
@@ -126,6 +129,27 @@ async function main() {
       need(2, 'search <project> <query>');
       await engine.openProject(project);
       return print(await engine.searchFootage(args.slice(1).join(' ')));
+    }
+    case 'multicam': {
+      need(3, 'multicam <project> <mediaId> <mediaId...> [--wide id] [--audio id] [-o edited.json]');
+      await engine.openProject(project);
+      const ids = args.slice(1);
+      const wide = str('wide');
+      const sync = await engine.syncMulticam(wide && !ids.includes(wide) ? [...ids, wide] : ids);
+      const { segments, clips } = await engine.autoSwitch(sync, {
+        wide, audioFrom: str('audio') ?? wide, minShot: str('min-shot') ? Number(str('min-shot')) : undefined, idPrefix: 'mc',
+      });
+      for (const a of sync.angles) if (a.confidence < 0.3) console.error(`warning: ${a.mediaId} synced with low confidence (${a.confidence})`);
+      if (str('o')) {
+        const out = path.resolve(str('o')!);
+        const edited: Project = structuredClone(project);
+        edited.tracks.push({ id: 'mc-video', kind: 'video', clips: clips.video }, { id: 'mc-audio', kind: 'audio', clips: clips.audio });
+        // Paths stay relative to the original project's folder.
+        edited.media = edited.media.map((m) => ({ ...m, path: path.relative(path.dirname(out), engine.resolvePath(m.path)) }));
+        await writeFile(out, JSON.stringify(edited, null, 2) + '\n');
+        return print({ sync, segments, output: out });
+      }
+      return print({ sync, segments, clips });
     }
     default:
       throw new EngineError('USAGE', `unknown command ${cmd}\n\n${HELP}`);

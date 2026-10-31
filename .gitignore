@@ -4,3 +4,7 @@ dist/
 *.mp4
 examples/school/footage/
 examples/school/out/
+examples/interview/footage/
+examples/interview/out/
+examples/interview/edited.json
+.cache/

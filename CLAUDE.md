@@ -11,9 +11,11 @@ This repo is the **Engine + AI brain** half of the Pro Video Editor. It has no U
 - `src/media.ts`: probe, thumbnails, waveform, proxies. Results are cached under `cacheDir`, keyed by file path + size + mtime.
 - `src/render.ts`: `buildGraph` turns a time window of a project into one FFmpeg filtergraph. Preview frames, playback audio, export and analysis all use it, so what the App previews is what gets exported.
 - `src/ai.ts`: transcription (pluggable `Transcriber`; whisper.cpp built in), transcript search, silence/filler/pacing analysis.
+- `src/multicam.ts`: audio sync (FFT envelope correlation, then fine envelope refine), active-speaker auto-switch, segments to clips.
 - `src/engine.ts`: the `Engine` class, which is the public API, plus export presets.
 - `src/cli.ts`: the `engine` command-line tool.
 - `scripts/make-sample.ts`: generates synthetic footage and a sample project.
+- `scripts/make-multicam.ts`: synthetic two-person interview on three cameras with known offsets (used by tests).
 
 ## Rules
 
