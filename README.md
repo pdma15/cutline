@@ -53,7 +53,7 @@ const file  = await engine.exportProject(project, 'youtube', (f) => console.log(
 | Transcription with word timestamps | Plumbing done: whisper.cpp via `WHISPER_CPP_BIN` + `WHISPER_MODEL`, or pass any `Transcriber`. Not run against a real model yet |
 | Filler-word detection, transcript search | Done (needs transcripts) |
 | Speaker labels | Not yet (Whisper has no diarisation; every word is `S1`) |
-| Multicam audio sync | Done. Under 1 ms accuracy, confidence score, clock-drift measurement (drift not yet corrected) |
+| Multicam audio sync | Done. Under 1 ms accuracy, confidence score, clock drift measured and corrected (speed tweak on drifting angles) |
 | Multicam auto-switch to active speaker | Done. Mic-level based with wide shot for silence/crosstalk, 2 s minimum shot, cuts 0.2 s early |
 | Visual footage search (frame descriptions) | Not started |
 | Auto-reframe with subject tracking | Not started (Shorts preset centre-crops) |

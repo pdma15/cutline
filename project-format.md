@@ -92,15 +92,16 @@ Create one `Engine` per open project and call `openProject(project, projectFolde
 | `transcribe(mediaId)` | `{ mediaId, language, words: [{text,start,end,speaker}] }`. Times are source-file seconds |
 | `searchFootage(query)` | `[{ mediaId, time, end, text, score, source }]`. Times are source-file seconds |
 | `analyse(project)` | `{ duration, silences[], fillers[], cuts[], pacing: { hookScore, hook, slowSections[] } }`. Times are timeline seconds |
-| `syncMulticam(mediaIds, {reference?, maxOffset?})` | `{ reference, start, end, angles: [{ mediaId, offset, duration, confidence, driftPerHour }] }`. **Proposed addition.** See Multicam below |
+| `syncMulticam(mediaIds, {reference?, maxOffset?})` | `{ reference, start, end, angles: [{ mediaId, offset, clockRate, duration, confidence, driftPerHour }] }`. **Proposed addition.** See Multicam below |
 | `autoSwitch(sync, {wide?, audioFrom?, minShot?, speechDb?, crosstalkDb?, anticipate?, speakers?, timelineStart?})` | `{ segments: [{start,end,mediaId,reason}], clips: { video: MediaClip[], audio: MediaClip[] } }`. **Proposed addition** |
 | `exportProject(project, preset, onProgress, {output?, signal?})` | Path to the finished MP4. `preset` is `youtube` \| `shorts` \| `4k` \| `school`, or a custom preset object |
 
 ### Multicam
 
-- `offset` is where an angle's source time 0 falls in *reference* time: `referenceTime = sourceTime + offset`. The reference angle (first in the list, or `reference`) has offset 0.
+- `referenceTime = offset + sourceTime × clockRate`. The reference angle (first in the list, or `reference`) has offset 0 and clockRate 1.
 - `confidence` is 0..1. Below about 0.3, show a warning and let the editor nudge the sync by hand.
-- `driftPerHour` is measured when angles overlap by more than 2 minutes. The offset is accurate near the start of the overlap. Drift is reported, not corrected yet.
+- `driftPerHour` and `clockRate` are measured when angles overlap by more than 2 minutes (otherwise drift is `null` and clockRate is 1). Camera clocks typically drift 0.1 to 0.5 s per hour.
+- Drift is corrected in the clips `autoSwitch` returns: clips from a drifting angle carry a `speed` effect of `1 / clockRate` (e.g. 0.9999), so they stay in sync from start to end with no change to their timeline length. The App should keep that effect when the editor trims or moves those clips.
 - `autoSwitch` returns clips ready to drop onto the timeline: muted video clips that cut between angles, and one audio clip from `audioFrom` underneath. The App inserts them and owns the result from then on.
 - `segments[].reason` is `speaker` (that person's mic was loudest), `wide` (silence or crosstalk), or `hold` (no clear choice, kept the previous angle).
 

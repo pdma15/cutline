@@ -3,11 +3,11 @@
 // Sync is two passes:
 //   1. Coarse: cross-correlate onset envelopes (100 Hz) with an FFT. Onsets — where the sound gets
 //      louder — survive different mics, gains and room noise, and the FFT keeps hours of footage fast.
-//   2. Fine: correlate raw 8 kHz audio over a short window within ±30 ms of the coarse answer,
-//      giving sub-millisecond offsets. Done at two points to measure clock drift on long takes.
+//   2. Fine: near the start of the overlap (and near the end, on takes over 2 minutes), re-find the
+//      offset locally from onsets, then correlate 2 ms envelopes within ±30 ms for sub-ms accuracy.
+//      Two measurements give the camera's clock rate, so drift on long takes is corrected.
 //
-// Times: an angle's `offset` is where its source time 0 falls in reference time, so
-// referenceTime = sourceTime + offset.
+// Times: referenceTime = offset + sourceTime * clockRate. Without drift clockRate is 1.
 
 import type { MediaClip } from './contract.js';
 import { EngineError, ffmpeg, sec } from './ffmpeg.js';
@@ -28,6 +28,9 @@ export interface SyncedAngle {
   mediaId: string;
   /** Reference time of this angle's source time 0, seconds. */
   offset: number;
+  /** Reference seconds per source second. 1 unless clock drift was measured. */
+  clockRate: number;
+  /** Source duration, seconds. */
   duration: number;
   /** Pearson correlation of the onset envelopes at the chosen offset, 0..1. Below ~0.3 is doubtful. */
   confidence: number;
@@ -42,6 +45,11 @@ export interface MulticamSync {
   start: number;
   end: number;
 }
+
+/** Source time of an angle at a reference time. */
+export const toSource = (a: SyncedAngle, ref: number) => (ref - a.offset) / a.clockRate;
+/** Reference time at which an angle's footage ends. */
+export const refEnd = (a: SyncedAngle) => a.offset + a.duration * a.clockRate;
 
 // ---------- audio ----------
 
@@ -221,6 +229,26 @@ export async function refineOffset(refFile: string, camFile: string, coarse: num
   return { offset: coarse - (best + frac) / PCM_RATE, r: y1 };
 }
 
+/**
+ * Re-finds the offset in one window from onset envelopes, within ±search seconds of a guess.
+ * Drift moves a long take's local offset away from the single global FFT answer.
+ */
+function localCoarse(ref: Float32Array, cam: Float32Array, guess: number, t0: number, window: number, search: number): number {
+  const from = Math.round(t0 * ENVELOPE_RATE);
+  const to = Math.round((t0 + window) * ENVELOPE_RATE);
+  let best = Math.round(guess * ENVELOPE_RATE);
+  let bestR = -Infinity;
+  // cam[i - L] lines up with ref[i] when the offset is L frames.
+  for (let L = Math.round((guess - search) * ENVELOPE_RATE); L <= Math.round((guess + search) * ENVELOPE_RATE); L++) {
+    const r = pearsonAt(cam, ref, -L, from, to);
+    if (r > bestR) {
+      bestR = r;
+      best = L;
+    }
+  }
+  return best / ENVELOPE_RATE;
+}
+
 export interface SyncInput {
   mediaId: string;
   file: string;
@@ -238,34 +266,52 @@ export async function syncAngles(inputs: SyncInput[], opts: { reference?: string
   const angles: SyncedAngle[] = [];
   for (const cam of inputs) {
     if (cam === ref) {
-      angles.push({ mediaId: cam.mediaId, offset: 0, duration: cam.duration, confidence: 1, driftPerHour: null });
+      angles.push({ mediaId: cam.mediaId, offset: 0, clockRate: 1, duration: cam.duration, confidence: 1, driftPerHour: null });
       continue;
     }
     const a = ref.features.onset;
     const b = cam.features.onset;
     const minOverlap = Math.min(5 * ENVELOPE_RATE, Math.floor(0.5 * Math.min(a.length, b.length)));
     const { lag, r } = bestLag(a, b, minOverlap, maxLag);
-    let offset = lag / ENVELOPE_RATE;
+    const coarse = lag / ENVELOPE_RATE;
+    let offset = coarse;
+    let clockRate = 1;
     let driftPerHour: number | null = null;
 
     if (opts.refine !== false) {
-      const ov0 = Math.max(0, offset);
-      const ov1 = Math.min(ref.duration, offset + cam.duration);
+      const ov0 = Math.max(0, coarse);
+      const ov1 = Math.min(ref.duration, coarse + cam.duration);
       const win = Math.min(8, (ov1 - ov0) / 3);
+      /** Offset measured over [t0, t0 + win], attributed to the window's centre. */
+      const measure = async (t0: number) => {
+        const local = localCoarse(a, b, coarse, t0, win, 1.5);
+        const fine = await refineOffset(ref.file, cam.file, local, t0, win);
+        return { t: t0 + win / 2, offset: fine.r > 0.2 ? fine.offset : local, ok: fine.r > 0.2 };
+      };
       if (win >= 2) {
-        const early = await refineOffset(ref.file, cam.file, offset, ov0 + win * 0.25, win);
-        if (early.r > 0.2) offset = early.offset;
+        const early = await measure(ov0 + win * 0.25);
+        offset = early.offset;
         if (ov1 - ov0 > 120) {
-          const late = await refineOffset(ref.file, cam.file, offset, ov1 - win * 1.25, win);
-          const span = ov1 - ov0 - win * 1.5;
-          if (late.r > 0.2 && early.r > 0.2) driftPerHour = Math.round(((late.offset - early.offset) / span) * 3600 * 1000) / 1000;
+          const late = await measure(ov1 - win * 1.25);
+          if (early.ok && late.ok) {
+            // offset(ref) = early.offset + (ref - early.t) * slope; solve for the source-time-0 mapping.
+            const slope = (late.offset - early.offset) / (late.t - early.t);
+            driftPerHour = Math.round(slope * 3600 * 1000) / 1000;
+            if (Math.abs(slope) > 1e-6) {
+              clockRate = 1 / (1 - slope);
+              offset = (early.offset - early.t * slope) / (1 - slope);
+            }
+          }
         }
       }
     }
-    angles.push({ mediaId: cam.mediaId, offset: Math.round(offset * 1e5) / 1e5, duration: cam.duration, confidence: Math.round(r * 100) / 100, driftPerHour });
+    angles.push({
+      mediaId: cam.mediaId, offset: Math.round(offset * 1e5) / 1e5, clockRate, duration: cam.duration,
+      confidence: Math.round(r * 100) / 100, driftPerHour,
+    });
   }
   const start = Math.min(...angles.map((x) => x.offset));
-  const end = Math.max(...angles.map((x) => x.offset + x.duration));
+  const end = Math.max(...angles.map(refEnd));
   return { reference: ref.mediaId, angles, start, end };
 }
 
@@ -308,8 +354,8 @@ export function autoSwitchSegments(sync: MulticamSync, features: Map<string, Aud
 
   const f0 = Math.floor(sync.start * LEVEL_RATE);
   const f1 = Math.ceil(sync.end * LEVEL_RATE);
-  const covers = (a: SyncedAngle, f: number) => f / LEVEL_RATE >= a.offset && f / LEVEL_RATE < a.offset + a.duration;
-  const levelAt = (a: SyncedAngle, f: number) => features.get(a.mediaId)!.level[Math.floor(f - a.offset * LEVEL_RATE)] ?? -140;
+  const covers = (a: SyncedAngle, f: number) => f / LEVEL_RATE >= a.offset && f / LEVEL_RATE < refEnd(a);
+  const levelAt = (a: SyncedAngle, f: number) => features.get(a.mediaId)!.level[Math.floor(toSource(a, f / LEVEL_RATE) * LEVEL_RATE)] ?? -140;
   const floor = new Map(speakers.map((a) => [a.mediaId, percentile(Array.from(features.get(a.mediaId)!.level), 0.2)]));
 
   // 1. raw pick per frame
@@ -358,7 +404,7 @@ export function autoSwitchSegments(sync: MulticamSync, features: Map<string, Aud
   // 4. absorb shots shorter than minShot into a neighbour that can cover them
   const canCover = (id: string, s: SwitchSegment) => {
     const a = sync.angles.find((x) => x.mediaId === id)!;
-    return a.offset <= s.start + 1e-6 && a.offset + a.duration >= s.end - 1e-6;
+    return a.offset <= s.start + 1e-6 && refEnd(a) >= s.end - 1e-6;
   };
   // Shots no neighbour can cover (e.g. only one camera was rolling) are left as they are.
   const stuck = new Set<SwitchSegment>();
@@ -411,7 +457,7 @@ export function autoSwitchSegments(sync: MulticamSync, features: Map<string, Aud
   // Frame rounding can step a few ms past the footage; clamp to what each angle recorded.
   const out = segs.map((s) => {
     const a = sync.angles.find((x) => x.mediaId === s.mediaId)!;
-    return { ...s, start: Math.round(Math.max(s.start, a.offset) * 1000) / 1000, end: Math.round(Math.min(s.end, a.offset + a.duration) * 1000) / 1000 };
+    return { ...s, start: Math.round(Math.max(s.start, a.offset) * 1000) / 1000, end: Math.round(Math.min(s.end, refEnd(a)) * 1000) / 1000 };
   });
   // Close small gaps (< 1 s) by starting the next shot earlier where its angle has footage.
   for (let i = 1; i < out.length; i++) {
@@ -429,18 +475,21 @@ export function multicamClips(sync: MulticamSync, segments: SwitchSegment[], o: 
   const t0 = o.timelineStart ?? 0;
   const base = segments.length ? segments[0].start : sync.start;
   const id = o.idPrefix ?? 'mc';
-  const offset = (m: string) => sync.angles.find((a) => a.mediaId === m)!.offset;
+  const angle = (m: string) => sync.angles.find((a) => a.mediaId === m)!;
   const round = (n: number) => Math.round(n * 1e5) / 1e5;
-  const video: MediaClip[] = segments.map((s, i) => ({
-    id: `${id}-v${i + 1}`, mediaId: s.mediaId, start: round(t0 + s.start - base), in: round(s.start - offset(s.mediaId)), out: round(s.end - offset(s.mediaId)), muted: true,
-  }));
+  // A drifting camera plays at 1/clockRate speed so its footage stays locked to reference time.
+  const clip = (cid: string, a: SyncedAngle, from: number, to: number, muted: boolean): MediaClip => ({
+    id: cid, mediaId: a.mediaId, start: round(t0 + from - base), in: round(toSource(a, from)), out: round(toSource(a, to)),
+    ...(muted ? { muted: true } : {}),
+    ...(Math.abs(a.clockRate - 1) > 1e-9 ? { effects: [{ type: 'speed' as const, rate: 1 / a.clockRate }] } : {}),
+  });
+  const video = segments.map((s, i) => clip(`${id}-v${i + 1}`, angle(s.mediaId), s.start, s.end, true));
   const audio: MediaClip[] = [];
   const src = sync.angles.find((a) => a.mediaId === (o.audioFrom ?? sync.reference));
   if (src && segments.length) {
-    const end = segments[segments.length - 1].end;
     const from = Math.max(base, src.offset);
-    const to = Math.min(end, src.offset + src.duration);
-    if (to > from) audio.push({ id: `${id}-a1`, mediaId: src.mediaId, start: round(t0 + from - base), in: round(from - src.offset), out: round(to - src.offset) });
+    const to = Math.min(segments[segments.length - 1].end, refEnd(src));
+    if (to > from) audio.push(clip(`${id}-a1`, src, from, to, false));
   }
   return { video, audio };
 }

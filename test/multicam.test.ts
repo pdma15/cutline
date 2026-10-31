@@ -3,7 +3,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { Engine, EngineError, validateProject, type MediaClip, type Project } from '../src/index.js';
+import { Engine, EngineError, clipLength, validateProject, type MediaClip, type Project } from '../src/index.js';
+import { multicamClips, toSource } from '../src/multicam.js';
 import { ffmpeg } from '../src/ffmpeg.js';
 import { CAMERAS, TURNS, makeMulticamMedia, multicamProject } from '../scripts/make-multicam.js';
 
@@ -39,7 +40,7 @@ describe('multicam sync', () => {
     await assert.rejects(engine.syncMulticam(['camA']), (e: EngineError) => e.code === 'SYNC_FAILED');
   });
 
-  test('measures clock drift on long takes', async () => {
+  test('measures and corrects clock drift on long takes', async () => {
     // cam2 starts 3 s in and its clock runs 100 ppm fast: 0.36 s of drift per hour.
     const R = 8000, LEN = 150;
     let seed = 7;
@@ -60,9 +61,23 @@ describe('multicam sync', () => {
     const e = new Engine({ baseDir: dir, cacheDir: path.join(dir, 'cache') });
     await e.importMedia('d1.m4a', 'd1');
     await e.importMedia('d2.m4a', 'd2');
-    const a = (await e.syncMulticam(['d1', 'd2'])).angles[1];
+    const sync = await e.syncMulticam(['d1', 'd2']);
+    const a = sync.angles[1];
     assert.ok(Math.abs(a.offset - 3) < 0.002, `offset ${a.offset}`);
     assert.ok(a.driftPerHour !== null && Math.abs(a.driftPerHour - 0.36) < 0.05, `drift ${a.driftPerHour}`);
+    assert.ok(Math.abs(a.clockRate - 1.0001) < 2e-5, `clockRate ${a.clockRate}`);
+
+    // Truth: reference time r is source time (r - 3) / 1.0001 on cam2. Uncorrected that is ~14 ms off by the end.
+    for (const r of [10, 75, 140]) {
+      const err = Math.abs(toSource(a, r) - (r - 3) / 1.0001);
+      assert.ok(err < 0.002, `at ${r}s off by ${(err * 1000).toFixed(2)} ms`);
+    }
+
+    // Clips from the drifting angle get a speed tweak that keeps their timeline length exact.
+    const { video } = multicamClips(sync, [{ start: 5, end: 70, mediaId: 'd1', reason: 'speaker' }, { start: 70, end: 140, mediaId: 'd2', reason: 'speaker' }]);
+    assert.equal(video[0].effects, undefined);
+    assert.ok(Math.abs(clipLength(video[1]) - 70) < 1e-3, `length ${clipLength(video[1])}`);
+    assert.ok(Math.abs(video[1].out - (140 - 3) / 1.0001) < 0.002);
   });
 });
 
