@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.engine-cache/
+*.mp4
+examples/school/footage/
+examples/school/out/
