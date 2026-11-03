@@ -9,7 +9,7 @@ Plain HTML, CSS and JavaScript. No npm, frameworks, fonts, CDNs, API keys or dep
 - `style.css` — responsive layout and appearance
 - `script.js` — project state, timeline and interactions
 - `fake-engine.js` — clearly labelled demo AI and export responses
-- `project-format.md` — engine handoff notes
+- `real-engine.js` — connects to the real engine when served by the Cutline server (`npm start` at the repo root)
 - `README.md` — these instructions
 
 ## Run or deploy
@@ -82,11 +82,16 @@ Shortcuts are disabled while typing or when a dialog is open.
 
 ## Engine integration
 
-See project-format.md. `fake-engine.js` deliberately keeps the PDF's function
-names together. Swap its demo implementation for an adapter to your actual engine.
-The basic browser import/preview code in `script.js` must then be connected to the
-engine's probe/frame/audio outputs; replacing the mock alone does not create a
-compositor. Real AI results must be mapped to the relevant media IDs and timestamps.
+Done (merge day). Run `npm start` at the repo root and open http://localhost:4100.
+`real-engine.js` replaces `window.engine` with the real engine when the Cutline server
+answers `/api/health`; opened as a plain static site, `fake-engine.js` stays in place,
+so Netlify deploys still work as a demo.
+
+With the engine connected: imports are copied to the local workspace and measured by
+the engine; a paused preview shows the engine's composited frame (all tracks, effects,
+titles); transcript, footage search and pacing are real; export renders an MP4.
+The shared format, the App's differences and the server API are in
+[../project-format.md](../project-format.md).
 
 ## Verification
 

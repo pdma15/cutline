@@ -1,6 +1,6 @@
 # @pro-video/engine
 
-The headless engine for the Pro Video Editor: video processing and AI with no UI. Input is a project JSON (see [project-format.md](project-format.md)). Output is frames, audio, analysis and finished videos.
+The headless engine for the Pro Video Editor: video processing and AI with no UI. Input is a project JSON (see [project-format.md](../project-format.md)). Output is frames, audio, analysis and finished videos.
 
 ## Quick start
 

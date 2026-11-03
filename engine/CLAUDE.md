@@ -2,7 +2,7 @@
 
 This repo is the **Engine + AI brain** half of the Pro Video Editor. It has no UI. It takes a project JSON and produces frames, audio, analysis data and finished videos. The Editor App (Project 2, another repo) calls it.
 
-**The shared contract is `project-format.md`.** Never change the project shape or a function signature without agreeing it with the App side first.
+**The shared contract is `../project-format.md`** (repo root). Never change the project shape or a function signature without agreeing it with the App side first.
 
 ## Layout
 

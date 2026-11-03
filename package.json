@@ -1,0 +1,13 @@
+{
+  "name": "cutline",
+  "private": true,
+  "description": "Cutline: Pro Video Editor. Engine (Project 1) + Editor App (Project 2), joined by a local server.",
+  "type": "module",
+  "scripts": {
+    "postinstall": "npm --prefix engine install",
+    "start": "engine/node_modules/.bin/tsx server/server.ts",
+    "test": "npm --prefix engine test && engine/node_modules/.bin/tsx --test server/*.test.ts",
+    "test:long": "npm --prefix engine run test:long",
+    "typecheck": "npm --prefix engine run typecheck && engine/node_modules/.bin/tsc -p server"
+  }
+}

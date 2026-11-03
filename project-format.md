@@ -1,8 +1,8 @@
 # Project format (shared contract)
 
-Copy this file into both repos. Neither side changes it without telling the other. Contract changes are agreed first, then made in both repos the same day.
+The one contract between the Engine (`engine/`) and the Editor App (`app/`). Neither side changes it without telling the other. Contract changes are agreed first, then made on both sides in the same pull request.
 
-TypeScript types for everything below are in `src/contract.ts`. `validateProject()` checks a project against them.
+TypeScript types for the engine side are in `engine/src/contract.ts`; `validateProject()` checks a project against them. The App writes a few things differently (see **Editor App format** at the end); `server/normalize.ts` translates them, so both formats stay valid.
 
 ## Project JSON
 
@@ -116,3 +116,49 @@ Create one `Engine` per open project and call `openProject(project, projectFolde
 Errors are thrown as `EngineError` with a `code`: `NOT_FOUND`, `UNSUPPORTED`, `INVALID_PROJECT`, `UNKNOWN_MEDIA`, `UNKNOWN_PRESET`, `EMPTY_PROJECT`, `SYNC_FAILED`, `AI_NOT_CONFIGURED`, `AI_REFUSED`, `AI_FAILED`, `ABORTED`, `FFMPEG_FAILED`, `RENDER_FAILED`.
 
 The App's `fakeEngine` should implement exactly these signatures.
+
+## Editor App format (Project 2)
+
+The App saves version 1 projects in the shape above with these differences. `server/normalize.ts` converts them before anything reaches the engine; a test (`server/server.test.ts`) keeps the two in step.
+
+| App writes | Engine reads | Notes |
+|---|---|---|
+| `clip.volume` (0..1) | `{ type: "volume", gain }` effect | |
+| Text clips `{ in: 0, out: d, text }` | `{ duration: d, text }` | Titles get the App's look: bottom-centre, bold, fade |
+| `clip.text` on a video clip | a separate text clip over the same range | The engine treats any clip with `text` as a text clip, so this must never reach it unconverted |
+| `transitionIn: null` | no `transitionIn` | |
+| `media.path` = the original file name | the workspace copy, found by media id | See "Media files" below |
+| `media.duration` for images = 6 | 0 | Images use `out - in` either way |
+
+App-only fields the engine ignores: project `name`, `approved`; clip `name`; media `favorite`, `demo`, `size`, `modified`.
+
+App rules the engine doesn't enforce:
+
+- IDs are letters, digits, `_` and `-` only.
+- No overlapping clips within one track.
+- Limits: 24-hour timeline, 30 tracks, 1,000 media items, 2,000 clips per track, 1,000 comments/markers, 5 MB project JSON.
+- Ripple delete and transcript cuts move later clips on the affected video track only.
+
+Clips the engine creates (multicam, reframe) have no `effects` array when empty and may carry effects the App doesn't edit yet (`reframe`, `speed`, `transform`). **To do before the App opens them:** the App's `validateProject` requires `effects` on every clip.
+
+### Media files
+
+The App keeps original files in the browser and stores only names. When served by the Cutline server, each import is also sent to `PUT /api/media/<mediaId>?name=<file name>`; the server keeps a copy at `workspace/media/<mediaId>.<ext>` and returns the engine's probe (`type`, `duration`, `video`, `audio`). Nothing leaves the computer: the server listens on 127.0.0.1 only.
+
+The App's demo media (`demo: true`, ids `m1`–`m4`) map to generated stand-in files, so the demo project renders and exports.
+
+### Server API (what `app/real-engine.js` calls)
+
+| Request | Returns |
+|---|---|
+| `GET /api/health` | `{ engine: true, presets, ai: { transcribe, claude } }` |
+| `PUT /api/media/:id?name=` (file body) | probe result |
+| `POST /api/frame` `{ project, time, width }` | PNG; header `X-Missing-Media` lists media with no file |
+| `POST /api/audio` `{ project, from, to }` | float32 stereo; header `X-Sample-Rate` |
+| `POST /api/call` `{ fn, args }` | `getThumbnails` (data URLs), `getWaveform`, `makeProxy`, `transcribe` (App word list), `searchFootage` (`{mediaId, time, end, label, source, score}`), `analyse` (`{hookScore, flags: [{time, end, label}], analysis}`) |
+| `POST /api/export` `{ project, preset }` | `{ job }`; 409 naming any files that need reimporting |
+| `GET /api/export/:job` | `{ progress (0–100), done, error, url, name }` |
+| `GET /api/export/:job/file` | the MP4 |
+| `POST /api/export/:job/cancel` | stops the render |
+
+Errors are `{ error, code }` with the engine's `EngineError` codes and matching HTTP status (e.g. `AI_NOT_CONFIGURED` → 501).

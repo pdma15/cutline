@@ -79,7 +79,7 @@ function renderTimeline() {
   const interval = pixels < 22 ? 5 : 2;
   $('#ruler').innerHTML = Array.from({length:Math.ceil(length / interval)}, (_,i) => `<span class="tick" style="left:${i * interval * pixels}px">${timecode(i * interval).slice(0,5)}</span>`).join('');
   $('#tracks').innerHTML = project.tracks.map(t => `<div class="track" data-track="${t.id}"><div class="track-label">${t.kind === 'audio' ? '♫' : t.kind === 'text' ? 'T' : '▣'} &nbsp; ${escapeHTML(t.id.toUpperCase())}</div>${t.clips.map(c => `<button draggable="true" class="clip ${t.kind} ${selected === c.id ? 'selected' : ''}" data-clip="${c.id}" style="left:${112 + c.start * pixels}px;width:${Math.max(4,(c.out-c.in)*pixels)}px" title="${escapeHTML(c.name || mediaFor(c)?.path || c.text || 'Title')}">${escapeHTML(c.name || mediaFor(c)?.path || c.text || 'Title')}<small>${timecode(c.out-c.in)}</small></button>`).join('')}</div>`).join('');
-  $('#markers').innerHTML = pacingFlags.filter(f => f.time <= duration()).map(f => `<span class="pacing-flag" style="left:${112+f.time*pixels}px" title="${escapeHTML(f.label)}">DEMO PACE ↓</span>`).join('') + project.markers.map((m,i) => `<button class="marker-pin" data-marker="${i}" style="left:${112 + m.time*pixels}px" title="Marker at ${timecode(m.time)}; click to seek, double-click to remove">◆</button>`).join('');
+  $('#markers').innerHTML = pacingFlags.filter(f => f.time <= duration()).map(f => `<span class="pacing-flag" style="left:${112+f.time*pixels}px" title="${escapeHTML(f.label)}">${window.engine?.live ? 'PACE' : 'DEMO PACE'} ↓</span>`).join('') + project.markers.map((m,i) => `<button class="marker-pin" data-marker="${i}" style="left:${112 + m.time*pixels}px" title="Marker at ${timecode(m.time)}; click to seek, double-click to remove">◆</button>`).join('');
   updateTime();
 }
 function renderInspector() {
@@ -132,6 +132,23 @@ function updatePreview() {
     setMediaPlaying(audioPlayers.get(a.id),a.in+playhead-a.start,a.volume ?? 1);
   }
   for (const [id,player] of audioPlayers) if (!activeAudio.has(id)) player.pause();
+  engineFrame();
+}
+// With the real engine, a paused preview shows the engine's composited frame (all tracks, effects, titles).
+let frameTimer, frameKey = '', frameUrl = '';
+function engineFrame() {
+  const img = $('#engine-frame'), c = currentClips('video').at(-1), m = c && mediaFor(c);
+  if (!window.engine?.live || playing || !m || m.demo) { img.hidden = true; $('#canvas').classList.remove('engine-frame-on'); frameKey = ''; return; }
+  const key = JSON.stringify([project, playhead]); if (key === frameKey) return; frameKey = key;
+  clearTimeout(frameTimer);
+  frameTimer = setTimeout(async () => {
+    try {
+      const { blob } = await engine.getFrameAt(project, playhead, Math.round($('#canvas').clientWidth * devicePixelRatio));
+      if (key !== frameKey) return;
+      if (frameUrl) URL.revokeObjectURL(frameUrl); frameUrl = URL.createObjectURL(blob);
+      img.src = frameUrl; img.hidden = false; $('#canvas').classList.add('engine-frame-on'); $('#preview-badge').textContent = 'ENGINE FRAME';
+    } catch (err) { img.hidden = true; $('#canvas').classList.remove('engine-frame-on'); if (key === frameKey) notify(err.message); }
+  }, 120);
 }
 function pause() { playing = false; $('#play').textContent = '▶'; $('#play').setAttribute('aria-label','Play'); $('#video').pause(); for (const player of audioPlayers.values()) player.pause(); }
 function play() {
@@ -203,20 +220,25 @@ async function importFiles(files) {
     const type = file.type.split('/')[0]; if (!['video','image','audio'].includes(type)) { notify(`Unsupported file: ${file.name}`); continue; }
     const url=URL.createObjectURL(file); let length=6;
     try {
-      if (type !== 'image') length = await new Promise((resolve,reject) => {
+      const existing=project.media.find(m => !m.demo && m.path===file.name && m.type===type && (m.size===undefined || m.size===file.size) && (m.modified===undefined || m.modified===file.lastModified));
+      const id=existing?.id ?? uid();
+      // The real engine keeps a copy it can render and measures the duration itself.
+      if (window.engine?.live) { const info=await engine.uploadMedia(id,file); if (info.duration) length=info.duration; }
+      else if (type !== 'image') length = await new Promise((resolve,reject) => {
         const probe=document.createElement(type); const timeout=setTimeout(() => {probe.removeAttribute('src'); probe.load(); reject(Error('Metadata timed out'));},10000);
         const finish = (ok) => {clearTimeout(timeout); const d=probe.duration; probe.removeAttribute('src'); probe.load(); ok && Number.isFinite(d) && d>0 ? resolve(d) : reject(Error('Unsupported media'));};
         probe.onloadedmetadata=()=>finish(true); probe.onerror=()=>finish(false); probe.preload='metadata'; probe.src=url;
       });
-      const existing=project.media.find(m => !m.demo && m.path===file.name && m.type===type && (m.size===undefined || m.size===file.size) && (m.modified===undefined || m.modified===file.lastModified));
       if (existing) { if (Math.abs(existing.duration-length)>0.25) throw Error('Relink duration differs'); if(urls.has(existing.id)) URL.revokeObjectURL(urls.get(existing.id)); urls.set(existing.id,url); render(); notify(`Relinked ${file.name}`); }
-      else change(() => { const id=uid(); urls.set(id,url); project.media.push({id,path:file.name,type,duration:length,proxyPath:null,size:file.size,modified:file.lastModified}); });
-    } catch { URL.revokeObjectURL(url); notify(`Could not read ${file.name}. Try a browser-compatible file.`); }
+      else change(() => { urls.set(id,url); project.media.push({id,path:file.name,type,duration:length,proxyPath:null,size:file.size,modified:file.lastModified}); });
+    } catch (err) { URL.revokeObjectURL(url); notify(window.engine?.live ? `Could not import ${file.name}: ${err.message}` : `Could not read ${file.name}. Try a browser-compatible file.`); }
   }
   $('#files').value='';
 }
 async function loadTranscript() {
-  transcript=await window.engine.transcribe('m1');
+  const c=currentClips('video').at(-1) || project.tracks.filter(t => t.kind==='video').flatMap(t => t.clips)[0], m=c && mediaFor(c);
+  try { transcript = window.engine?.live ? (m ? await engine.transcribe(m.id) : []) : await window.engine.transcribe('m1'); }
+  catch (err) { transcript=[]; notify(err.message); }
   $('#transcript').innerHTML=transcript.map((w,i) => `<button class="word" data-word="${i}">${escapeHTML(w.text)}</button>`).join('');
 }
 function renderComments() {
@@ -233,7 +255,7 @@ document.querySelectorAll('[data-tab]').forEach(button => button.onclick=()=>{
   if (button.dataset.tab==='transcript') loadTranscript();
 });
 $('#import').onclick=()=>$('#files').click(); $('#files').onchange=e=>importFiles([...e.target.files]);
-$('#ai-search').onclick=async()=>{const query=$('#search').value.trim();if(!query)return notify('Type a footage search above first.');const hits=await engine.searchFootage(query);$('#search-results').textContent=hits.map(h=>`${h.label} at ${timecode(h.time)}`).join(' · ')||'No demo matches';if(hits.length){const hit=hits[0],c=project.tracks.filter(t=>t.kind==='video').flatMap(t=>t.clips).find(c=>c.mediaId===hit.mediaId&&hit.time>=c.in&&hit.time<c.out);if(c){pause();seek(c.start+hit.time-c.in);selectClip(c.id);}}};
+$('#ai-search').onclick=async()=>{const query=$('#search').value.trim();if(!query)return notify('Type a footage search above first.');const hits=await engine.searchFootage(query);$('#search-results').textContent=hits.map(h=>`${h.label} at ${timecode(h.time)}`).join(' · ')||(engine.live?'No matches. Search covers transcribed and indexed footage.':'No demo matches');if(hits.length){const hit=hits[0],c=project.tracks.filter(t=>t.kind==='video').flatMap(t=>t.clips).find(c=>c.mediaId===hit.mediaId&&hit.time>=c.in&&hit.time<c.out);if(c){pause();seek(c.start+hit.time-c.in);selectClip(c.id);}}};
 $('#add-track').onclick=()=>{if(project.tracks.length>=30)return notify('This frontend supports up to 30 tracks.');change(()=>project.tracks.push({id:uid(),kind:$('#track-kind').value,clips:[]}));};
 $('#search').oninput=renderMedia; $('#favorites').onchange=renderMedia;
 $('#media-list').onclick=e=>{
@@ -299,14 +321,17 @@ $('#cut-word').onclick=()=>{
   if(!match)return notify('This word has already been cut.');
   change(()=>{const {t,c}=match,length=w.end-w.start,originalEnd=c.out,at=c.start+w.start-c.in;for(const next of t.clips)if(next.start>=c.start+originalEnd-c.in-0.001)next.start-=length;t.clips=t.clips.filter(x=>x.id!==c.id);if(w.start>c.in+0.001)t.clips.push({...clone(c),out:w.start});if(w.end<originalEnd-0.001)t.clips.push({...clone(c),id:uid(),start:at,in:w.end,out:originalEnd});selected=null;playhead=Math.min(playhead,duration());});
 };
-$('#analyse').onclick=async()=>{const result=await engine.analyse(project);pacingFlags=result.flags;renderTimeline();$('#analysis').textContent=`Simulated hook score: ${result.hookScore}/100. Demo flag at 00:12: ${result.flags[0].label}.`;};
+$('#analyse').onclick=async()=>{try{const result=await engine.analyse(project);pacingFlags=result.flags;renderTimeline();$('#analysis').textContent=result.demo===false?`Hook score: ${result.hookScore}/100. ${result.flags.map(f=>`${timecode(f.time)} ${f.label}`).join(' · ')||'No slow sections or filler words found.'}`:`Simulated hook score: ${result.hookScore}/100. Demo flag at 00:12: ${result.flags[0].label}.`;}catch(err){notify(err.message);}};
 $('#comment-form').onsubmit=e=>{e.preventDefault();const text=$('#comment').value.trim(),author=$('#author').value.trim();if(!text||!author)return;change(()=>project.comments.push({id:uid(),time:playhead,author,text,resolved:false}));$('#comment').value='';};
 $('#comments').onclick=e=>{const seekButton=e.target.closest('[data-seek]'),resolve=e.target.closest('[data-resolve]');if(seekButton){pause();seek(+seekButton.dataset.seek);}if(resolve)change(()=>{const c=project.comments.find(c=>c.id===resolve.dataset.resolve);c.resolved=!c.resolved;});};
 $('#approve').onclick=()=>{change(()=>{});project.approved=true;persist();renderComments();$('#approve').textContent='✓ Approved locally';};
 $('#export').onclick=()=>$('#export-dialog').showModal();
 $('#run-export').onclick=async()=>{
-  $('#run-export').disabled=true;$('#export-status').textContent='Simulating export progress…';const snapshot=clone(project);
-  try{const result=await engine.exportProject(snapshot,$('#preset').value,p=>$('#export-progress').value=p);download(result,'cutline-export-request.json');$('#export-status').textContent='Export request downloaded. No MP4 has been rendered.';}catch{notify('Demo export failed. Your project is still available.');}finally{$('#run-export').disabled=false;}
+  $('#run-export').disabled=true;$('#export-status').textContent=engine.live?'Rendering…':'Simulating export progress…';const snapshot=clone(project);
+  try{const result=await engine.exportProject(snapshot,$('#preset').value,p=>$('#export-progress').value=p);
+    if(result.url){const a=document.createElement('a');a.href=result.url;a.download=result.name;a.click();$('#export-status').textContent=`Rendered ${result.name}. Check your downloads.`;}
+    else{download(result,'cutline-export-request.json');$('#export-status').textContent='Export request downloaded. No MP4 has been rendered.';}
+  }catch(err){$('#export-status').textContent='';notify(engine.live?err.message:'Demo export failed. Your project is still available.');}finally{$('#run-export').disabled=false;}
 };
 $('#help').onclick=()=>$('#help-dialog').showModal();
 document.addEventListener('keydown',e=>{
@@ -324,4 +349,5 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)pause();});
 window.addEventListener('beforeunload',()=>{for(const url of urls.values())URL.revokeObjectURL(url);});
 try{const saved=localStorage.getItem(storageKey);if(saved){project=validateProject(JSON.parse(saved));notify('Recovered your last edit. Reimport local media to restore previews.');}}catch{notify('Could not recover the saved edit. Starting with a demo; use Open project to restore a JSON backup.');}
 $('#video').onloadedmetadata=()=>updatePreview();
+document.addEventListener('engine-live',()=>render());
 render();requestAnimationFrame(tick);
