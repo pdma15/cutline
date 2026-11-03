@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.engine-cache/
+*.mp4
+examples/school/footage/
+examples/school/out/
+examples/interview/footage/
+examples/interview/out/
+examples/interview/edited.json
+.cache/
+examples/*/vertical.json
+examples/*/captioned.json
+examples/*/translated-*.json
