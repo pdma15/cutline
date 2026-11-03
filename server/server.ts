@@ -249,12 +249,15 @@ export async function createCutlineServer(opts: ServerOptions): Promise<http.Ser
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const root = path.resolve(here, '..');
   const port = Number(process.env.PORT) || 4100;
-  const sites: Record<string, string> = { '/': path.join(root, 'app') };
-  if (existsSync(path.join(root, 'landing-page'))) sites['/welcome'] = path.join(root, 'landing-page');
+  // The landing page plays first at /, then sends visitors to the editor at /editor/.
+  const hasLanding = existsSync(path.join(root, 'landing-page', 'index.html'));
+  const sites: Record<string, string> = hasLanding
+    ? { '/': path.join(root, 'landing-page'), '/editor': path.join(root, 'app') }
+    : { '/': path.join(root, 'app') };
   const server = await createCutlineServer({ workspace: process.env.CUTLINE_WORKSPACE ?? path.join(root, 'workspace'), sites });
   server.listen(port, '127.0.0.1', () => {
     console.log(`Cutline is running: http://localhost:${port}`);
-    if (sites['/welcome']) console.log(`Landing page:       http://localhost:${port}/welcome/`);
+    if (hasLanding) console.log(`Straight to the editor: http://localhost:${port}/editor/`);
     console.log('Press Ctrl+C to stop.');
   });
 }

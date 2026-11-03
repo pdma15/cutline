@@ -81,6 +81,26 @@ describe('server', () => {
     assert.ok([403, 404].includes((await fetch(base + '/..%2fpackage.json')).status), 'no path traversal');
   });
 
+  test('landing page at /, editor at /editor/', async () => {
+    const ws = path.join(dir, 'ws-sites');
+    const s = await createCutlineServer({ workspace: ws, sites: { '/': path.join(root, 'landing-page'), '/editor': path.join(root, 'app') } });
+    await new Promise<void>((r) => s.listen(0, '127.0.0.1', r));
+    const b = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+    try {
+      const landing = await (await fetch(b + '/')).text();
+      assert.match(landing, /goToEditor/);
+      assert.match(landing, /"editor\/"/, 'redirect target is relative so it works under any host');
+      assert.equal((await fetch(b + '/assets/cutline-logo.png')).headers.get('content-type'), 'image/png');
+      const editor = await fetch(b + '/editor', { redirect: 'manual' });
+      assert.equal(editor.status, 301);
+      assert.match(await (await fetch(b + '/editor/')).text(), /real-engine\.js/);
+      assert.equal((await fetch(b + '/editor/script.js')).status, 200);
+      assert.equal((await (await fetch(b + '/api/health')).json()).engine, true);
+    } finally {
+      await new Promise((r) => s.close(r));
+    }
+  });
+
   test('renders the App demo project, titles included', async () => {
     const res = await post('/api/frame', { project: appDemo(), time: 2, width: 320 });
     assert.equal(res.status, 200, await res.clone().text());

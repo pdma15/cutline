@@ -109,6 +109,10 @@
   #sound[aria-pressed="true"] { color: #8fe0ab; }
   body.landed #skip { opacity: 0; pointer-events: none; }
 
+  /* ---------- Hand-off to the editor ---------- */
+  #to-editor { position: fixed; inset: 0; z-index: 40; background: #000; opacity: 0; pointer-events: none; transition: opacity .9s ease; }
+  body.leaving #to-editor { opacity: 1; pointer-events: auto; }
+
   @media (max-width: 600px) {
     .brand { top: 16px; left: 16px; }
     .brand img { width: 30px; height: 30px; }
@@ -148,6 +152,7 @@
 
 <button id="sound" class="chip" type="button" aria-pressed="false">Sound off</button>
 <button id="skip" class="chip" type="button">Skip intro</button>
+<div id="to-editor" aria-hidden="true"></div>
 
 <script>
 (() => {
@@ -622,6 +627,7 @@
     }
     document.body.classList.add("landed");
     setTimeout(() => document.body.classList.add("settled"), 1200);
+    setTimeout(goToEditor, EDITOR_AFTER_IMPACT_MS);
     nextBolt = now_t + rand(2.5, 4);
   }
 
@@ -935,6 +941,19 @@
     if (trail) parts.unshift("0 -30px 6px rgba(255,255,255,.3)", "0 -70px 12px rgba(255,255,255,.15)", "0 -120px 18px rgba(255,255,255,.07)");
     title.style.textShadow = parts.join(",");
     title.style.color = heat > .05 ? `rgb(255,${Math.round(lerp(238, 214, heat))},${Math.round(lerp(228, 170, heat))})` : "";
+  }
+
+  /* =====================================================================
+     HAND-OFF: after the title lands and the storm settles, fade into the editor.
+     Add ?stay to the address to keep watching the scene (e.g. while tweaking it).
+     ===================================================================== */
+  const EDITOR_AFTER_IMPACT_MS = 3200;
+  const EDITOR_URL = location.protocol === "file:" ? "../app/index.html" : "editor/";
+  const STAY = new URLSearchParams(location.search).has("stay");
+  function goToEditor() {
+    if (STAY || document.body.classList.contains("leaving")) return;
+    document.body.classList.add("leaving");
+    setTimeout(() => location.assign(EDITOR_URL), 950);
   }
 
   /* =====================================================================

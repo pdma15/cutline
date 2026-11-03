@@ -9,8 +9,8 @@ cutline/
 ├── engine/              Project 1 — all video processing and AI, no UI (TypeScript + FFmpeg)
 ├── app/                 Project 2 — the editor people click (plain HTML/CSS/JS, no build step)
 ├── server/              Joins them: serves the App, passes its calls to the engine
-├── project-format.md    The shared contract (project JSON, function list, server API)
-└── landing-page/        (coming next)
+├── landing-page/        The intro: storm, lightning, ANI x PADMA, then into the editor
+└── project-format.md    The shared contract (project JSON, function list, server API)
 ```
 
 ## Run it
@@ -22,9 +22,11 @@ npm install
 npm start
 ```
 
-Open http://localhost:4100. Everything runs on your computer; imported media is copied to `workspace/` next to this file and never uploaded anywhere.
+Open http://localhost:4100. The landing page plays (about 15 seconds; "Skip intro" jumps to the title), then fades into the editor at http://localhost:4100/editor/. Go to `/editor/` directly to skip it, or add `?stay` to the landing page address to keep watching the scene.
 
-The App also works on its own as a static site (open `app/index.html`, or deploy the `app/` folder to Netlify). Without the server it falls back to its built-in fake engine: same interface, demo results, no real export.
+Everything runs on your computer; imported media is copied to `workspace/` next to this file and never uploaded anywhere.
+
+For static hosting (e.g. Netlify), publish `landing-page/` as the site root with `app/` copied into it as `editor/`. Opened straight from disk, the landing page goes to `../app/index.html` instead. The App also works on its own as a static site. Without the server it falls back to its built-in fake engine: same interface, demo results, no real export.
 
 ## What works together
 
