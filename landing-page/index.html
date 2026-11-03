@@ -1,0 +1,969 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cutline</title>
+<link rel="icon" href="assets/cutline-logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400;1,6..96,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Magich is a licensed font (Perfectype Studio). Drop the purchased file at
+     assets/Magich.woff2 (or .otf) and it is used automatically. Until then the
+     title uses Bodoni Moda plus a hand-drawn Magich-style "M". */
+  @font-face {
+    font-family: "Magich";
+    src: url("assets/Magich.woff2") format("woff2"),
+         url("assets/Magich.otf") format("opentype");
+    font-display: swap;
+  }
+
+  :root {
+    --ink: #f3eee4;
+    --green-glow: rgba(46, 170, 90, .45);
+    --display: "Magich", "Bodoni Moda", "Didot", serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { background: #000; color: var(--ink); overflow: hidden; font-family: var(--mono); -webkit-font-smoothing: antialiased; }
+
+  #sky { position: fixed; inset: -40px; width: calc(100% + 80px); height: calc(100% + 80px); display: block; will-change: transform; }
+
+  /* ---------- 1. Loader ---------- */
+  #loader { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+  .half { position: absolute; left: 0; right: 0; height: 50.5%; background: #000; transition: transform 1.1s cubic-bezier(.77, 0, .18, 1); }
+  .half.top { top: 0; }
+  .half.bottom { bottom: 0; }
+  #loader.cut .half.top { transform: translateY(-101%); }
+  #loader.cut .half.bottom { transform: translateY(101%); }
+  .cutline {
+    position: absolute; top: 50%; left: 0; height: 2px; width: 0; background: #2fb062;
+    box-shadow: 0 0 12px #2fb062, 0 0 30px var(--green-glow); transform: translateY(-50%);
+    transition: width .45s cubic-bezier(.65, 0, .35, 1), opacity .4s .5s;
+  }
+  #loader.slice .cutline { width: 100%; }
+  #loader.cut .cutline { opacity: 0; }
+  .load-ui { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; padding: 0 16px; transition: opacity .35s ease; }
+  #loader.slice .load-ui { opacity: 0; }
+  .spinner { position: relative; width: 132px; height: 132px; }
+  .spinner img { width: 100%; height: 100%; object-fit: contain; filter: brightness(1.7) saturate(1.1) drop-shadow(0 0 18px var(--green-glow)); animation: spin 1.25s linear infinite; }
+  .spinner::after { content: ""; position: absolute; inset: -16px; border-radius: 50%; border: 1px solid rgba(47,176,98,.18); border-top-color: rgba(47,176,98,.9); animation: spin .8s linear infinite reverse; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .meter { width: min(420px, 100%); font-size: 12px; letter-spacing: .04em; color: #8a8f88; }
+  .meter-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+  .pct { font-size: 40px; font-weight: 500; color: #e9ece6; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .pct small { font-size: 16px; color: #5f655d; margin-left: 2px; }
+  .brand-tag { text-transform: uppercase; letter-spacing: .3em; font-size: 11px; color: #4e5a50; }
+  .bar { height: 2px; background: #161916; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: #2fb062; box-shadow: 0 0 10px #2fb062; }
+  .status { margin-top: 14px; color: #c9cec6; min-height: 1.4em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status::before { content: "> "; color: #2fb062; }
+  .log { margin-top: 8px; height: 4.2em; overflow: hidden; color: #3f453f; line-height: 1.4; }
+  .log div::before { content: "✓ "; color: #24653c; }
+
+  /* ---------- Title ---------- */
+  #title {
+    position: fixed; left: 50%; top: 0; z-index: 5;
+    font-family: var(--display);
+    font-variation-settings: "opsz" 96;
+    font-weight: 400;
+    font-size: clamp(54px, 12.5vw, 196px);
+    line-height: 1;
+    letter-spacing: -.005em;
+    white-space: nowrap;
+    color: var(--ink);
+    opacity: 0;
+    transform: translateX(-50%);
+    will-change: transform, filter;
+    user-select: none;
+    -webkit-box-reflect: below -.12em linear-gradient(transparent 52%, rgba(255,255,255,.16));
+  }
+  #title .x { font-style: italic; font-size: .42em; vertical-align: .55em; margin: 0 .3em 0 .26em; color: #b9dcc4; }
+  /* hand-drawn Magich-style M: two arches, hairline up-strokes, heavy down-strokes */
+  #title .M { display: inline-block; height: .705em; width: .86em; margin: 0 .01em 0 .02em; fill: currentColor; overflow: visible; }
+  #title .M path.hair { fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+  body.magich #title .M { display: none; }
+  body.magich #title .m-fallback { display: inline; }
+  #title .m-fallback { display: none; }
+
+  /* ---------- Chrome ---------- */
+  .brand {
+    position: fixed; top: 22px; left: 24px; z-index: 6; display: flex; align-items: center; gap: 12px;
+    color: var(--ink); text-decoration: none; opacity: 0; transform: translateY(-6px);
+    transition: opacity 1.4s ease, transform 1.4s ease;
+  }
+  .brand img { width: 38px; height: 38px; filter: brightness(1.8) drop-shadow(0 0 10px var(--green-glow)); }
+  .brand span { font-family: var(--display); font-size: 22px; letter-spacing: .14em; text-transform: uppercase; }
+  body.settled .brand { opacity: 1; transform: none; }
+
+  .chip {
+    position: fixed; z-index: 30; font: 11px var(--mono); letter-spacing: .2em; text-transform: uppercase;
+    color: rgba(255,255,255,.5); background: none; border: 0; cursor: pointer; padding: 8px;
+    transition: color .2s, opacity .6s;
+  }
+  .chip:hover { color: #fff; }
+  #skip { right: 20px; bottom: 18px; }
+  #sound { right: 20px; top: 18px; }
+  #sound[aria-pressed="true"] { color: #8fe0ab; }
+  body.landed #skip { opacity: 0; pointer-events: none; }
+
+  @media (max-width: 600px) {
+    .brand { top: 16px; left: 16px; }
+    .brand img { width: 30px; height: 30px; }
+    .brand span { font-size: 18px; }
+    #sound { top: 14px; right: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="sky"></canvas>
+
+<h1 id="title" aria-label="Ani x Padma">ANI<span class="x">x</span>PAD<svg class="M" viewBox="0 0 122 100" aria-hidden="true"><path class="hair" d="M3 95 C5 101 12 101 14 93 C19 66 25 22 37 6 C40 1 45 0 48 4"/><path d="M44 1 C52 3 57 9 58.5 20 L66.5 100 L51.5 100 L45 24 C44 14 42.5 7 40.5 3.5 Z"/><path class="hair" d="M58 90 C63 60 72 22 86 6 C89 1.5 94 0 97 4"/><path d="M93 1 C101 3 106 9 107.5 20 L115.5 100 L100.5 100 L94 24 C93 14 91.5 7 89.5 3.5 Z"/><path class="hair" d="M46 99.2 L71 99.2 M95 99.2 L121 99.2"/></svg><span class="m-fallback">M</span>A</h1>
+
+<a class="brand" href="#" aria-label="Cutline home">
+  <img src="assets/cutline-logo.png" alt="">
+  <span>Cutline</span>
+</a>
+
+<div id="loader" aria-live="polite">
+  <div class="half top"></div>
+  <div class="half bottom"></div>
+  <div class="load-ui">
+    <div class="spinner"><img src="assets/cutline-logo.png" alt="Cutline"></div>
+    <div class="meter">
+      <div class="meter-top">
+        <span class="brand-tag">Cutline</span>
+        <span class="pct"><span id="pct">0</span><small>%</small></span>
+      </div>
+      <div class="bar"><i id="bar"></i></div>
+      <div class="status" id="status">booting</div>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+  <div class="cutline"></div>
+</div>
+
+<button id="sound" class="chip" type="button" aria-pressed="false">Sound off</button>
+<button id="skip" class="chip" type="button">Skip intro</button>
+
+<script>
+(() => {
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const clamp01 = t => Math.max(0, Math.min(1, t));
+  const smooth = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+  const easeInOut = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  const easeOut = t => 1 - Math.pow(1 - t, 3);
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  // If the real Magich font is present, drop the hand-drawn M.
+  document.fonts.load('40px "Magich"').then(f => { if (f.length) document.body.classList.add("magich"); }).catch(() => {});
+
+  /* =====================================================================
+     NOISE + PROCEDURAL TEXTURES (built while the loader runs)
+     ===================================================================== */
+  function makeFbm(seed) {
+    const hash = (x, y) => {
+      let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(seed, 982451653);
+      h = Math.imul(h ^ (h >>> 13), 1274126177);
+      return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+    };
+    const noise = (x, y) => {
+      const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+      const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+      const a = hash(xi, yi), b = hash(xi + 1, yi), c = hash(xi, yi + 1), d = hash(xi + 1, yi + 1);
+      return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+    };
+    return (x, y, oct = 5) => {
+      let s = 0, a = .5, f = 1, n = 0;
+      for (let i = 0; i < oct; i++) { s += a * noise(x * f, y * f); n += a; f *= 2.03; a *= .5; }
+      return s / n;
+    };
+  }
+
+  // Cumulus sprite: one canvas lit by the sun, one as dark storm cloud
+  function genCumulus(seed) {
+    const w = 360, h = 220;
+    const fbm = makeFbm(seed);
+    const lc = document.createElement("canvas"); lc.width = w; lc.height = h;
+    const li = lc.getContext("2d").createImageData(w, h);
+    for (let y = 0; y < h; y++) {
+      const ny = y / h;
+      for (let x = 0; x < w; x++) {
+        const nx = x / w;
+        const dx = (nx - .5) / .47, dy = (ny - .64) / .52;
+        const dome = 1 - (dx * dx + dy * dy * 1.3);
+        const base = smooth(.86, .74, ny);
+        const n = fbm(nx * 5 + seed * 3.1, ny * 3.4 + seed);
+        const n2 = fbm(nx * 16 + 9, ny * 11, 3);
+        const d = dome * base + (n - .5) * 1.0 + (n2 - .5) * .28;
+        const a = smooth(.04, .3, d);
+        if (a <= 0) continue;
+        // top-lit billows, shadowed underside, silver edges
+        const shade = clamp01(.2 + (1 - ny) * .85 + (n - .5) * 1.1 + (1 - a) * .35);
+        const i = (y * w + x) * 4;
+        li.data[i] = lerp(132, 255, shade);
+        li.data[i + 1] = lerp(148, 255, shade);
+        li.data[i + 2] = lerp(178, 255, shade);
+        li.data[i + 3] = a * 255;
+      }
+    }
+    lc.getContext("2d").putImageData(li, 0, 0);
+    return lc;
+  }
+
+  // Storm deck: wide, horizontally tiling, opaque on top, ragged mammatus underside.
+  // Returns {dark, lit} canvases; `lit` is what lightning reveals inside the cloud.
+  const DECK_W = 720, DECK_H = 300, DECK_SOLID = [13, 14, 20], LOBES = 9;
+  function genDeck() {
+    const fbm = makeFbm(77), fbm2 = makeFbm(91);
+    const tile = (f, nx, ny, fx, fy, o) => f(nx * fx, ny * fy, o) * (1 - nx) + f((nx - 1) * fx, ny * fy, o) * nx;
+    const dk = document.createElement("canvas"), lt = document.createElement("canvas");
+    dk.width = lt.width = DECK_W; dk.height = lt.height = DECK_H;
+    const di = dk.getContext("2d").createImageData(DECK_W, DECK_H);
+    const lti = lt.getContext("2d").createImageData(DECK_W, DECK_H);
+    for (let y = 0; y < DECK_H; y++) {
+      const ny = y / DECK_H;
+      for (let x = 0; x < DECK_W; x++) {
+        const nx = x / DECK_W;
+        const q = tile(fbm2, nx, ny, 5, 3, 4);
+        const n = tile(fbm, nx, ny + q * .25, 7, 4.5, 6);
+        const edgeN = tile(fbm2, nx, 0, 6, 1, 4);
+        // bulging underside: two staggered rows of rounded lobes (mammatus) + billow noise
+        const lobe = (off, salt) => {
+          const c = nx * LOBES + off, ci = Math.floor(c), u = c - ci;
+          const k = ((ci % LOBES) + LOBES) % LOBES;
+          const size = .55 + .45 * (Math.sin(k * 127.1 + salt) * 43758.5453 % 1 + 1) % 1;
+          return Math.sqrt(Math.max(0, 1 - (2 * u - 1) * (2 * u - 1))) * size;
+        };
+        const bump = Math.max(lobe(0, 1) * .075, lobe(.5, 7) * .06 - .02);
+        const edge = .52 + bump + (edgeN - .5) * .2 + (n - .5) * .2;
+        const a = smooth(edge + .02, edge - .1, ny);
+        if (a <= 0) continue;
+        const under = smooth(edge - .4, edge, ny);           // 1 near the underside
+        // billows catch faint light from the horizon on their undersides
+        const v = clamp01(.3 + (n - .5) * 1.8 + under * .25);
+        const toSolid = smooth(0, .3, ny);                   // blend into flat fill at the top
+        const i = (y * DECK_W + x) * 4;
+        di.data[i]     = lerp(DECK_SOLID[0], 8 + v * 62, toSolid);
+        di.data[i + 1] = lerp(DECK_SOLID[1], 9 + v * 66, toSolid);
+        di.data[i + 2] = lerp(DECK_SOLID[2], 14 + v * 82, toSolid);
+        di.data[i + 3] = a * 255;
+        const L = .35 + v * .9;
+        lti.data[i] = lerp(60, 150 * L, toSolid); lti.data[i + 1] = lerp(64, 160 * L, toSolid); lti.data[i + 2] = lerp(90, 215 * L, toSolid);
+        lti.data[i + 3] = a * 255;
+      }
+    }
+    dk.getContext("2d").putImageData(di, 0, 0);
+    lt.getContext("2d").putImageData(lti, 0, 0);
+    return { dark: dk, lit: lt };
+  }
+
+  const ASSETS = { cumulus: [], fog: [], deck: null, ridge: [] };
+  const assetsReady = new Promise(res => {
+    const jobs = [];
+    for (let i = 0; i < 7; i++) jobs.push(() => {
+      const c = genCumulus(i * 17 + 5);
+      ASSETS.cumulus.push(c);
+      // same shape, storm-dark, for the churn inside the thundercloud
+      const d = document.createElement("canvas"); d.width = c.width; d.height = c.height;
+      const dc = d.getContext("2d");
+      dc.drawImage(c, 0, 0);
+      dc.globalCompositeOperation = "source-atop";
+      dc.fillStyle = "rgba(40,43,58,.9)"; dc.fillRect(0, 0, d.width, d.height);
+      ASSETS.fog.push(d);
+    });
+    jobs.push(() => (ASSETS.deck = genDeck()));
+    jobs.push(() => {
+      const f = makeFbm(303);
+      for (let i = 0; i <= 240; i++) ASSETS.ridge.push(Math.pow(f(i / 240 * 6, 0.5, 5), 1.6));
+    });
+    const run = () => { const j = jobs.shift(); if (!j) return res(); j(); setTimeout(run, 0); };
+    setTimeout(run, 30);
+  });
+
+  /* =====================================================================
+     SOUND (off by default; browsers only allow audio after a click)
+     ===================================================================== */
+  const Sound = (() => {
+    let ac = null, master, white, brown, wind, rain, on = false;
+    function init() {
+      ac = new (window.AudioContext || window.webkitAudioContext)();
+      const comp = ac.createDynamicsCompressor();
+      master = ac.createGain(); master.gain.value = 0;
+      master.connect(comp); comp.connect(ac.destination);
+      const len = ac.sampleRate * 6;
+      white = ac.createBuffer(1, len, ac.sampleRate);
+      brown = ac.createBuffer(1, len, ac.sampleRate);
+      const w = white.getChannelData(0), b = brown.getChannelData(0);
+      let last = 0;
+      for (let i = 0; i < len; i++) {
+        w[i] = Math.random() * 2 - 1;
+        last = (last + .02 * w[i]) / 1.02; b[i] = last * 3.5;
+      }
+      const loop = (buf, type, f, q) => {
+        const s = ac.createBufferSource(); s.buffer = buf; s.loop = true;
+        const flt = ac.createBiquadFilter(); flt.type = type; flt.frequency.value = f; flt.Q.value = q;
+        const g = ac.createGain(); g.gain.value = 0;
+        s.connect(flt).connect(g).connect(master); s.start();
+        return { g, flt };
+      };
+      wind = loop(white, "bandpass", 500, .5);
+      rain = loop(white, "highpass", 2200, .3);
+    }
+    return {
+      toggle() {
+        if (!ac) init();
+        on = !on;
+        if (on) ac.resume();
+        master.gain.setTargetAtTime(on ? .9 : 0, ac.currentTime, .15);
+        return on;
+      },
+      set(windLvl, rainLvl, rumbleLvl) {
+        if (!ac) return;
+        const t = ac.currentTime;
+        wind.g.gain.setTargetAtTime(windLvl * .55, t, .25);
+        wind.flt.frequency.setTargetAtTime(220 + windLvl * 1100, t, .25);
+        rain.g.gain.setTargetAtTime(rainLvl * .14, t, .4);
+      },
+      thunder(delay, size) {
+        if (!ac || !on) return;
+        const t = ac.currentTime + delay;
+        const s = ac.createBufferSource(); s.buffer = brown;
+        const f = ac.createBiquadFilter(); f.type = "lowpass";
+        f.frequency.setValueAtTime(size > .8 ? 1600 : 600, t);
+        f.frequency.exponentialRampToValueAtTime(80, t + 3.5);
+        const g = ac.createGain();
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(size * 1.6, t + .02);
+        let tt = t + .15;
+        for (let i = 0; i < 6; i++) { g.gain.linearRampToValueAtTime(size * rand(.25, 1.1), tt); tt += rand(.18, .55); }
+        g.gain.exponentialRampToValueAtTime(.001, tt + 2.5);
+        s.connect(f).connect(g).connect(master);
+        s.start(t, Math.random() * 2); s.stop(tt + 2.6);
+      },
+      whoosh(dur) {
+        if (!ac || !on) return;
+        const t = ac.currentTime;
+        const s = ac.createBufferSource(); s.buffer = white;
+        const f = ac.createBiquadFilter(); f.type = "bandpass"; f.Q.value = 1.4;
+        f.frequency.setValueAtTime(3000, t); f.frequency.exponentialRampToValueAtTime(260, t + dur);
+        const g = ac.createGain(); g.gain.setValueAtTime(.001, t); g.gain.exponentialRampToValueAtTime(.9, t + dur);
+        s.connect(f).connect(g).connect(master); s.start(t); s.stop(t + dur + .02);
+      },
+      impact() {
+        if (!ac || !on) return;
+        const t = ac.currentTime;
+        const o = ac.createOscillator(); o.type = "sine";
+        o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(24, t + 1.8);
+        const g = ac.createGain(); g.gain.setValueAtTime(1.6, t); g.gain.exponentialRampToValueAtTime(.001, t + 2.4);
+        o.connect(g).connect(master); o.start(t); o.stop(t + 2.5);
+        this.thunder(0, 1.3);
+      },
+    };
+  })();
+
+  const $sound = document.getElementById("sound");
+  $sound.addEventListener("click", () => {
+    const on = Sound.toggle();
+    $sound.setAttribute("aria-pressed", on);
+    $sound.textContent = on ? "Sound on" : "Sound off";
+  });
+
+  /* =====================================================================
+     1. LOADER
+     ===================================================================== */
+  const steps = [
+    [0, "initializing cutline runtime"], [7, "installing packages"], [19, "resolving dependencies"],
+    [31, "unspooling film reels"], [45, "brewing the storm"], [58, "charging lightning"],
+    [70, "rendering frames"], [82, "colour grading the sky"], [93, "making the final cut"], [100, "ready"],
+  ];
+  const $pct = document.getElementById("pct"), $bar = document.getElementById("bar");
+  const $status = document.getElementById("status"), $log = document.getElementById("log");
+  const loader = document.getElementById("loader");
+  let progress = 0, stepIdx = 0, loaderDone = false;
+
+  function setProgress(p) {
+    progress = Math.min(100, p);
+    $pct.textContent = Math.floor(progress);
+    $bar.style.width = progress + "%";
+    while (stepIdx < steps.length && progress >= steps[stepIdx][0]) {
+      if (stepIdx > 0) {
+        const line = document.createElement("div");
+        line.textContent = steps[stepIdx - 1][1];
+        $log.prepend(line);
+        while ($log.children.length > 3) $log.lastChild.remove();
+      }
+      $status.textContent = steps[stepIdx][1] + (progress < 100 ? "…" : "");
+      stepIdx++;
+    }
+  }
+
+  // Time-based so it always takes ~LOAD_MS: uneven bursts + a few stalls, like a real install
+  const LOAD_MS = 4600;
+  const curve = [[0, 0]];
+  for (let p = 0; p < 100;) { p = Math.min(100, p + 2 + Math.random() * 9); curve.push([0, p]); }
+  let tAcc = 0;
+  for (let i = 1; i < curve.length; i++) curve[i][0] = (tAcc += .6 + (Math.random() < .2 ? 2.5 : Math.random()));
+  curve.forEach(c => (c[0] = c[0] / tAcc * LOAD_MS));
+  let loadStart = 0;
+
+  function tickLoader(now) {
+    if (loaderDone) return;
+    if (!loadStart) loadStart = now;
+    const e = now - loadStart;
+    let i = 1;
+    while (i < curve.length - 1 && curve[i][0] < e) i++;
+    const [ta, pa] = curve[i - 1], [tb, pb] = curve[i];
+    const f = Math.min(1, (e - ta) / (tb - ta || 1));
+    setProgress(pa + (pb - pa) * Math.min(1, f * 2.2));
+    if (e >= LOAD_MS) return finishLoader();
+    requestAnimationFrame(tickLoader);
+  }
+
+  function finishLoader() {
+    if (loaderDone) return;
+    loaderDone = true;
+    assetsReady.then(() => {
+      setProgress(100);
+      setTimeout(() => {
+        loader.classList.add("slice");
+        setTimeout(() => {
+          startScene();
+          loader.classList.add("cut");
+          setTimeout(() => loader.remove(), 1200);
+        }, 520);
+      }, 380);
+    });
+  }
+
+  /* =====================================================================
+     2/3. THE SCENE
+     ===================================================================== */
+  const canvas = document.getElementById("sky");
+  const ctx = canvas.getContext("2d");
+  const title = document.getElementById("title");
+  const lit = document.createElement("canvas"), litCtx = lit.getContext("2d");
+  const PAD = 40;                       // canvas overhang so shake never shows an edge
+  let W = 0, H = 0, DPR = 1;
+
+  // Timeline (seconds after the loader splits open)
+  const T = {
+    ENTER: 2.6,       // storm cloud top rushes up from below
+    INSIDE: 3.3,      // fully inside the black cloud
+    EXIT: 4.2,        // cloud base starts to rise away, ground comes up
+    SETTLE: 5.5,      // camera stops
+    DROP: 6.0,        // the title falls
+    IMPACT: 6.38,     // ...and hits
+  };
+  const GROUND = .84;  // ground line as a fraction of the screen height
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    canvas.width = (W + PAD * 2) * DPR; canvas.height = (H + PAD * 2) * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, PAD * DPR, PAD * DPR);
+    lit.width = Math.ceil(W / 2); lit.height = Math.ceil(H / 2);
+    placeTitle();
+  }
+
+  // Title sits with its baseline on the ground line
+  let titleTop = 0, titleH = 0, titleBaseline = 0;
+  function placeTitle() {
+    const r = title.getBoundingClientRect();
+    titleH = r.height;
+    titleBaseline = titleH * .8;                 // caps baseline inside the line box
+    titleTop = H * GROUND - titleBaseline;
+  }
+
+  /* ---------- world state ---------- */
+  const cumuli = [];
+  function spawnCumulus(initial) {
+    const z = rand(.35, 1.35);
+    const s = (.55 + z * 1.4) * Math.max(.75, W / 1300);
+    return {
+      img: (Math.random() * ASSETS.cumulus.length) | 0, z, s,
+      x: rand(-200, W), y: initial ? rand(-100, H * 1.4) : H + rand(40, 500),
+      flip: Math.random() < .5,
+    };
+  }
+  const fog = Array.from({ length: 14 }, () => ({ img: (Math.random() * 7) | 0, z: rand(.5, 1.4), s: rand(1.4, 3), x: rand(-300, innerWidth), y: rand(0, innerHeight * 1.5) }));
+  const streaks = Array.from({ length: 90 }, () => ({ x: Math.random(), y: Math.random(), l: rand(.04, .2), v: rand(.8, 2.2) }));
+  const rain = Array.from({ length: 420 }, () => ({ x: Math.random() * 1.2, y: Math.random(), v: rand(1.3, 2.1), l: rand(12, 30), z: rand(.4, 1) }));
+  const splashes = [];
+
+  const bolts = [];
+  let flash = 0, whiteout = 0, lightX = 0, lightR = 1, shake = 0, heat = 0, nextBolt = Infinity;
+  const particles = [];
+  let cracks = [], shock = null;
+
+  /* ---------- lightning ---------- */
+  function boltPath(x0, y0, x1, y1, rough, depth) {
+    let pts = [[x0, y0], [x1, y1]], off = rough;
+    for (let g = 0; g < 8; g++) {
+      const next = [pts[0]];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
+        next.push([(ax + bx) / 2 + (Math.random() - .5) * off, (ay + by) / 2 + (Math.random() - .5) * off * .25]);
+        next.push(pts[i + 1]);
+      }
+      pts = next; off *= .52;
+    }
+    const kids = [];
+    if (depth < 3) {
+      const n = depth === 0 ? 5 : 2;
+      for (let i = 0; i < n; i++) {
+        const p = pts[(rand(.05, .75) * pts.length) | 0];
+        const len = (y1 - y0) * rand(.15, .4) / (depth + 1);
+        const dir = Math.random() < .5 ? -1 : 1;
+        kids.push(boltPath(p[0], p[1], p[0] + dir * len * rand(.4, 1.1), p[1] + len, rough * .45, depth + 1));
+      }
+    }
+    return { pts, kids, w: [3.2, 1.6, 1, .7][depth] };
+  }
+
+  function strike(x, yEnd, opts = {}) {
+    const top = deckBottom() - DECK_PX() * .25;
+    bolts.push({ b: boltPath(x + rand(-1, 1) * W * .12, top, x, yEnd, Math.min(320, (yEnd - top) * .5), 0), born: performance.now(), big: !!opts.big });
+    const f = opts.big ? 1.4 : rand(.6, 1);
+    flash = Math.max(flash, f); lightX = x; lightR = opts.big ? 1.2 : .7;
+    if (!opts.silent) Sound.thunder(opts.big ? 0 : rand(.4, 2.2), opts.big ? 1.2 : rand(.35, .8));
+  }
+  function sheet(x) {                     // intracloud flash, no visible channel
+    flash = Math.max(flash, rand(.45, .8)); lightX = x; lightR = rand(.5, .9);
+    Sound.thunder(rand(.8, 2.5), rand(.25, .5));
+  }
+
+  function drawBolt(b, a) {
+    ctx.beginPath();
+    ctx.moveTo(b.pts[0][0], b.pts[0][1]);
+    for (const p of b.pts) ctx.lineTo(p[0], p[1]);
+    ctx.lineWidth = b.w * 7; ctx.strokeStyle = `rgba(120,140,255,${a * .12})`; ctx.stroke();
+    ctx.lineWidth = b.w * 2.6; ctx.strokeStyle = `rgba(190,205,255,${a * .45})`; ctx.stroke();
+    ctx.lineWidth = b.w; ctx.strokeStyle = `rgba(255,255,255,${a})`; ctx.stroke();
+    for (const k of b.kids) drawBolt(k, a * .75);
+  }
+
+  /* ---------- storm cloud geometry over time ---------- */
+  const DECK_PX = () => Math.max(H * .55, 260);
+  function cloudTop(t) {                  // ragged top edge rising from below (entering)
+    if (t < T.ENTER) return H + DECK_PX();
+    return lerp(H + 20, -DECK_PX() * 1.2, easeInOut(clamp01((t - T.ENTER) / (T.INSIDE - T.ENTER))));
+  }
+  function deckBottom(t = now_t) {        // ragged underside rising away (exiting), then resting
+    if (t < T.EXIT) return H + DECK_PX() * 1.3;
+    const p = easeOut(clamp01((t - T.EXIT) / (T.SETTLE - T.EXIT)));
+    return lerp(H + DECK_PX() * 1.1, H * .5, p) + Math.sin(t * .4) * 4;
+  }
+  function groundY(t = now_t) {
+    if (t < T.EXIT) return H * 2;
+    return lerp(H * 1.5, H * GROUND, easeOut(clamp01((t - T.EXIT - .25) / (T.SETTLE - T.EXIT))));
+  }
+
+  // Draws the storm cloud (between its top and bottom) with a given texture
+  function drawStormCloud(c, img, t, scale, alpha) {
+    const s = DECK_PX() * scale, tw = s * DECK_W / DECK_H;
+    const top = cloudTop(t) * scale, bot = deckBottom(t) * scale;
+    const drift = (t * 14 * scale) % tw;
+    c.globalAlpha = alpha;
+    c.fillStyle = img === ASSETS.deck.dark ? `rgb(${DECK_SOLID})` : "rgb(60,64,90)";
+    const solidA = Math.max(-10, top + s * .9), solidB = Math.min(H * scale + 10, bot - s * .9);
+    if (solidB > solidA) c.fillRect(-PAD, solidA, W * scale + PAD * 2, solidB - solidA);
+    for (let x = -drift - tw; x < W * scale + tw; x += tw) {
+      if (top < H * scale && top + s > 0 && top < bot - s) {  // entering: flipped so ragged edge is on top
+        c.save(); c.translate(0, top + s); c.scale(1, -1); c.drawImage(img, x, 0, tw + 1, s); c.restore();
+      }
+      if (bot - s < H * scale && bot > 0) c.drawImage(img, x, bot - s, tw + 1, s);
+    }
+    c.globalAlpha = 1;
+  }
+
+  /* ---------- impact ---------- */
+  function impact() {
+    const cx = W / 2, gy = H * GROUND;
+    shake = reduceMotion ? 0 : 1;
+    whiteout = 1; heat = 1;
+    strike(cx, titleTop + titleH * .2, { big: true, silent: true });
+    Sound.impact();
+    // electric arcs crawling from the letters into the ground
+    setTimeout(() => {
+      for (let i = 0; i < 4; i++) {
+        const x = cx + rand(-1, 1) * Math.min(W * .4, 420);
+        bolts.push({ b: boltPath(x, titleTop + titleH * rand(.3, .6), x + rand(-80, 80), gy + rand(4, 30), 60, 2), born: performance.now(), small: true });
+      }
+    }, 90);
+    shock = { born: performance.now(), x: cx, y: gy };
+    // dust, debris, sparks
+    for (let i = 0; i < 90; i++) {
+      const dir = Math.random() < .5 ? -1 : 1;
+      particles.push({ k: "dust", x: cx + rand(-1, 1) * W * .2, y: gy - rand(0, 20), vx: dir * rand(80, 900), vy: -rand(10, 160), r: rand(20, 50), life: rand(1.8, 3.6), age: 0 });
+    }
+    for (let i = 0; i < 70; i++) {
+      particles.push({ k: "rock", x: cx + rand(-1, 1) * W * .15, y: gy - 4, vx: rand(-700, 700), vy: -rand(350, 1300), r: rand(1.5, 4.5), floor: gy + rand(0, H * (1 - GROUND) * .7), life: 4, age: 0, rest: false });
+    }
+    for (let i = 0; i < 110; i++) {
+      const a = rand(Math.PI * 1.05, Math.PI * 1.95), sp = rand(400, 1600);
+      particles.push({ k: "spark", x: cx + rand(-1, 1) * W * .12, y: gy - rand(0, 30), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rand(.35, 1.1), age: 0 });
+    }
+    // scorched cracks radiating along the ground
+    cracks = [];
+    for (let i = 0; i < 12; i++) {
+      const dir = i % 2 ? 1 : -1;
+      const ex = cx + dir * rand(.1, .55) * W, ey = gy + rand(.05, .95) * (H - gy);
+      const pts = [[cx + rand(-60, 60), gy + 2]];
+      for (let s = 1; s <= 12; s++) {
+        const p = s / 12;
+        pts.push([lerp(pts[0][0], ex, p) + rand(-14, 14), lerp(pts[0][1], ey, p) + rand(-4, 4)]);
+      }
+      cracks.push(pts);
+    }
+    document.body.classList.add("landed");
+    setTimeout(() => document.body.classList.add("settled"), 1200);
+    nextBolt = now_t + rand(2.5, 4);
+  }
+
+  /* ---------- main loop ---------- */
+  let t0 = 0, last = 0, started = false, landed = false, dropped = false, now_t = 0;
+  const flags = {};
+  const once = (key, cond, fn) => { if (cond && !flags[key]) { flags[key] = 1; fn(); } };
+
+  function startScene() {
+    if (started) return;
+    started = true;
+    resize();
+    for (let i = 0; i < 18; i++) cumuli.push(spawnCumulus(true));
+    t0 = last = performance.now();
+    requestAnimationFrame(frame);
+  }
+
+  function frame(now) {
+    const realDt = (now - last) / 1000, dt = Math.min(.05, realDt);
+    last = now;
+    const t = now_t = (now - t0) / 1000;
+
+    const inStorm = t > T.INSIDE;                               // blue sky is gone once we're inside
+    const fallSpeed = H * (t < T.EXIT ? 2.8 : 2.8 * (1 - easeOut(clamp01((t - T.EXIT) / (T.SETTLE - T.EXIT)))));
+    const gy = groundY(t), db = deckBottom(t);
+
+    // camera shake: turbulence while diving, huge on impact
+    shake *= Math.pow(.05, realDt);
+    const turb = reduceMotion ? 0 : (t < T.SETTLE ? lerp(2.5, 7, smooth(T.ENTER, T.INSIDE, t)) * (1 - smooth(T.EXIT, T.SETTLE, t)) : 0);
+    const amp = shake * 34 + turb;
+    const sx = (Math.random() - .5) * amp, sy = (Math.random() - .5) * amp;
+    const roll = t < T.SETTLE && !reduceMotion ? Math.sin(t * 1.7) * .6 : (Math.random() - .5) * shake * 1.2;
+    canvas.style.transform = `translate(${sx}px, ${sy}px) rotate(${roll}deg)`;
+
+    ctx.clearRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2);
+
+    /* --- sky --- */
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    if (!inStorm) {
+      g.addColorStop(0, "#1f5fbf"); g.addColorStop(.55, "#5d9be0"); g.addColorStop(1, "#bfdcf3");
+    } else {
+      g.addColorStop(0, "#07080c"); g.addColorStop(.55, "#141823");
+      g.addColorStop(Math.min(.98, Math.max(.6, gy / H - .02)), "#2a3142"); g.addColorStop(1, "#0b0c10");
+    }
+    ctx.fillStyle = g; ctx.fillRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2);
+
+    if (!inStorm) {
+      // sun glare top-right
+      const sun = ctx.createRadialGradient(W * .82, -H * .05, 0, W * .82, -H * .05, W * .7);
+      sun.addColorStop(0, "rgba(255,250,230,.75)"); sun.addColorStop(.25, "rgba(255,240,210,.18)"); sun.addColorStop(1, "rgba(255,240,210,0)");
+      ctx.fillStyle = sun; ctx.fillRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2);
+
+      // cumulus rushing past (camera diving)
+      cumuli.sort((a, b) => a.z - b.z);
+      for (const c of cumuli) {
+        c.y -= fallSpeed * c.z * dt;
+        const w = 360 * c.s, h = 220 * c.s;
+        if (c.y + h < -80 && t < T.ENTER - .6) Object.assign(c, spawnCumulus(false));
+        ctx.save();
+        ctx.globalAlpha = .45 + Math.min(1, c.z) * .55;
+        ctx.translate(c.x + (c.flip ? w : 0), c.y);
+        if (c.flip) ctx.scale(-1, 1);
+        ctx.drawImage(ASSETS.cumulus[c.img], 0, 0, w, h);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+
+      // punch-through whiteouts
+      const wo = Math.max(0, 1 - Math.abs(t - .95) / .22) + Math.max(0, 1 - Math.abs(t - 2.05) / .26);
+      if (wo > 0) { ctx.fillStyle = `rgba(240,246,255,${Math.min(.92, wo)})`; ctx.fillRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2); }
+    } else {
+      /* --- distant ridge + ground --- */
+      if (gy < H + 10) {
+        const ridgeH = H * .07;
+        ctx.beginPath(); ctx.moveTo(-PAD, gy);
+        const R = ASSETS.ridge;
+        for (let i = 0; i < R.length; i++) ctx.lineTo(-PAD + (W + PAD * 2) * i / (R.length - 1), gy - R[i] * ridgeH);
+        ctx.lineTo(W + PAD, gy); ctx.closePath();
+        const lf = flash * .35;
+        ctx.fillStyle = `rgb(${10 + lf * 70},${11 + lf * 74},${16 + lf * 100})`; ctx.fill();
+        // haze on the horizon
+        const hz = ctx.createLinearGradient(0, gy - ridgeH * 1.6, 0, gy + 4);
+        hz.addColorStop(0, "rgba(40,46,62,0)"); hz.addColorStop(1, `rgba(46,52,70,${.55 + flash * .3})`);
+        ctx.fillStyle = hz; ctx.fillRect(-PAD, gy - ridgeH * 1.6, W + PAD * 2, ridgeH * 1.6 + 4);
+        // wet ground
+        const gg = ctx.createLinearGradient(0, gy, 0, H + PAD);
+        gg.addColorStop(0, `rgb(${18 + flash * 60},${20 + flash * 64},${27 + flash * 90})`); gg.addColorStop(1, "#030304");
+        ctx.fillStyle = gg; ctx.fillRect(-PAD, gy, W + PAD * 2, H + PAD - gy);
+      }
+    }
+
+    /* --- the storm cloud (entering, inside, exiting, overhead) --- */
+    if (t > T.ENTER - .1) {
+      drawStormCloud(ctx, ASSETS.deck.dark, t, 1, 1);
+      // churning texture while we're inside it
+      const inside = smooth(T.ENTER + .3, T.INSIDE, t) * (1 - smooth(T.EXIT, T.EXIT + .7, t));
+      if (inside > .01) {
+        ctx.fillStyle = `rgba(26,28,38,${inside * .7})`; ctx.fillRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2);
+        for (const f of fog) {
+          f.y -= Math.max(fallSpeed, H * .6) * f.z * dt;
+          const w = 360 * f.s, h = 220 * f.s;
+          if (f.y + h < -40) { f.y = H + rand(0, 200); f.x = rand(-w * .5, W - w * .5); }
+          ctx.globalAlpha = inside * (.35 + f.z * .4);
+          ctx.drawImage(ASSETS.fog[f.img], f.x, f.y, w, h);
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    /* --- lightning lighting up the cloud from inside --- */
+    const insideFog = t > T.ENTER + .3 && t < T.EXIT + .4;
+    if (flash > .02 && insideFog) {
+      // inside the cloud: the whole fog bank glows around the discharge
+      const fg = ctx.createRadialGradient(lightX, H * .35, 0, lightX, H * .35, W * .8 * lightR);
+      fg.addColorStop(0, `rgba(150,160,215,${Math.min(.85, flash * .7)})`);
+      fg.addColorStop(1, "rgba(150,160,215,0)");
+      ctx.fillStyle = fg; ctx.fillRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2);
+    } else if (flash > .02 && t > T.ENTER) {
+      litCtx.globalCompositeOperation = "source-over";
+      litCtx.clearRect(0, 0, lit.width, lit.height);
+      drawStormCloud(litCtx, ASSETS.deck.lit, t, .5, 1);
+      litCtx.globalCompositeOperation = "destination-in";
+      const ly = db - DECK_PX() * .3;
+      const rg = litCtx.createRadialGradient(lightX / 2, ly / 2, 0, lightX / 2, ly / 2, W * .5 * lightR);
+      rg.addColorStop(0, "rgba(0,0,0,1)"); rg.addColorStop(.5, "rgba(0,0,0,.45)"); rg.addColorStop(1, "rgba(0,0,0,0)");
+      litCtx.fillStyle = rg; litCtx.fillRect(0, 0, lit.width, lit.height);
+      ctx.globalAlpha = Math.min(1, flash);
+      ctx.drawImage(lit, 0, 0, W, H);
+      ctx.globalAlpha = 1;
+    }
+
+    /* --- bolts --- */
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = bolts.length - 1; i >= 0; i--) {
+      const b = bolts[i];
+      const age = (now - b.born) / 1000;
+      let a;
+      if (b.small) a = age < .5 ? (Math.random() < .6 ? rand(.4, 1) : 0) : 0;
+      else a = age < .06 ? 1 : age < .11 ? .15 : age < .2 ? 1 : age < .26 ? .3 : age < .34 ? .85 : Math.max(0, 1 - (age - .34) / (b.big ? .9 : .4));
+      if (age > (b.big ? 1.3 : .8)) { bolts.splice(i, 1); continue; }
+      if (a > 0) drawBolt(b.b, a);
+    }
+    ctx.globalCompositeOperation = "source-over";
+
+    /* --- impact aftermath --- */
+    heat *= Math.pow(.45, realDt);
+    if (cracks.length) {
+      const gyR = H * GROUND;
+      // glowing crater under the letters
+      const cg = ctx.createRadialGradient(W / 2, gyR, 0, W / 2, gyR, Math.min(W * .45, 520));
+      cg.addColorStop(0, `rgba(255,170,90,${.55 * heat + .04})`); cg.addColorStop(.4, `rgba(255,110,50,${.22 * heat})`); cg.addColorStop(1, "rgba(255,90,40,0)");
+      ctx.fillStyle = cg; ctx.fillRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2);
+      ctx.lineJoin = "round";
+      for (const pts of cracks) {
+        ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+        for (const p of pts) ctx.lineTo(p[0], p[1]);
+        const ember = .07 + .04 * Math.sin(t * 2 + pts[1][0]);
+        ctx.lineWidth = 5; ctx.strokeStyle = `rgba(255,120,50,${heat * .35 + ember * .5})`; ctx.stroke();
+        ctx.lineWidth = 1.5; ctx.strokeStyle = `rgba(255,220,170,${heat * .9 + ember})`; ctx.stroke();
+      }
+    }
+    if (shock) {
+      const p = (now - shock.born) / 1000 / .9;
+      if (p >= 1) shock = null;
+      else {
+        const e = easeOut(p), rx = e * W * .9;
+        ctx.lineWidth = 6 * (1 - p) + 1;
+        ctx.strokeStyle = `rgba(230,236,255,${(1 - p) * .8})`;
+        ctx.beginPath(); ctx.ellipse(shock.x, shock.y + 4, rx, rx * .1, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.strokeStyle = `rgba(200,215,255,${(1 - p) * .25})`; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(shock.x, shock.y, rx * .7, Math.PI, 0); ctx.stroke();
+      }
+    }
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.age += dt;
+      if (p.age > p.life) { particles.splice(i, 1); continue; }
+      const f = 1 - p.age / p.life;
+      if (p.k === "dust") {
+        p.vx *= Math.pow(.25, dt); p.vy *= Math.pow(.4, dt); p.x += p.vx * dt; p.y += p.vy * dt; p.r += 55 * dt;
+        const L = 60 + flash * 80 + heat * 60;
+        const dg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
+        dg.addColorStop(0, `rgba(${L + 20},${L},${L - 10},${.32 * f})`); dg.addColorStop(1, `rgba(${L},${L},${L},0)`);
+        ctx.fillStyle = dg; ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+      } else if (p.k === "rock") {
+        if (!p.rest) {
+          p.vy += 2400 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+          if (p.y > p.floor) { p.y = p.floor; p.vy *= -.28; p.vx *= .5; if (Math.abs(p.vy) < 60) p.rest = true; }
+        }
+        ctx.fillStyle = `rgba(${30 + heat * 120},${26 + heat * 60},${24},${Math.min(1, f * 3)})`;
+        ctx.fillRect(p.x, p.y, p.r, p.r);
+      } else {
+        p.vy += 1400 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+        ctx.globalCompositeOperation = "lighter";
+        ctx.strokeStyle = `rgba(255,${190 + f * 60},${120 + f * 100},${f})`; ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * .025, p.y - p.vy * .025); ctx.stroke();
+        ctx.globalCompositeOperation = "source-over";
+      }
+    }
+
+    /* --- speed streaks while diving --- */
+    const streakA = (1 - smooth(T.EXIT, T.SETTLE - .4, t)) * clamp01(t * 3);
+    if (streakA > .01) {
+      ctx.lineCap = "round"; ctx.lineWidth = 1;
+      ctx.strokeStyle = inStorm ? `rgba(150,165,200,${streakA * .22})` : `rgba(255,255,255,${streakA * .35})`;
+      ctx.beginPath();
+      for (const s of streaks) {
+        s.y -= s.v * dt * 2.6 * (fallSpeed / (H * 2.8));
+        if (s.y + s.l < 0) { s.y = 1 + Math.random() * .3; s.x = Math.random(); }
+        ctx.moveTo(s.x * W, s.y * H); ctx.lineTo(s.x * W, (s.y + s.l) * H);
+      }
+      ctx.stroke();
+    }
+
+    /* --- rain --- */
+    const rainA = smooth(T.EXIT, T.SETTLE, t);
+    if (rainA > .01) {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = `rgba(${170 + flash * 60},${182 + flash * 55},${210 + flash * 40},${rainA * (.22 + flash * .25)})`;
+      ctx.beginPath();
+      const climb = fallSpeed / H * .9;                       // still moving down → rain looks slower/upward
+      for (const r of rain) {
+        r.y += (r.v * r.z - climb) * dt; r.x -= dt * .18 * r.z;
+        if (r.y > 1.05) {
+          if (Math.random() < .25 && t > T.SETTLE) splashes.push({ x: r.x * W, y: gy + Math.random() * (H - gy), age: 0 });
+          r.y = -.05; r.x = Math.random() * 1.25;
+        }
+        if (r.y < -.1) r.y = 1.05;
+        if (r.x < -.05) r.x += 1.25;
+        const x = r.x * W, y = r.y * H, l = r.l * r.z;
+        ctx.moveTo(x, y); ctx.lineTo(x - l * .22, y + l);
+      }
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(190,200,225,${.35 * rainA})`;
+      ctx.beginPath();
+      for (let i = splashes.length - 1; i >= 0; i--) {
+        const s = splashes[i]; s.age += dt;
+        if (s.age > .18) { splashes.splice(i, 1); continue; }
+        const r = 2 + s.age * 30;
+        ctx.moveTo(s.x - r, s.y); ctx.quadraticCurveTo(s.x, s.y - r * .7, s.x + r, s.y);
+      }
+      ctx.stroke();
+    }
+
+    /* --- vignette + flashes --- */
+    if (inStorm) {
+      const v = ctx.createRadialGradient(W / 2, H * .6, Math.min(W, H) * .25, W / 2, H * .6, Math.max(W, H) * .85);
+      v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,.75)");
+      ctx.fillStyle = v; ctx.fillRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2);
+    }
+    if (flash > .01) { ctx.fillStyle = `rgba(200,212,255,${Math.min(.5, flash * .3)})`; ctx.fillRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2); }
+    if (whiteout > .01) { ctx.fillStyle = `rgba(255,255,255,${whiteout})`; ctx.fillRect(-PAD, -PAD, W + PAD * 2, H + PAD * 2); }
+    flash *= Math.pow(.003, realDt);
+    whiteout *= Math.pow(.0005, realDt);
+
+    /* --- title --- */
+    updateTitle(t, sx, sy);
+
+    /* --- scripted events --- */
+    once("w1", t > .8, () => Sound.whoosh(.3));
+    once("ic1", t > T.INSIDE - .1, () => sheet(W * rand(.3, .7)));
+    once("ic2", t > T.INSIDE + .45, () => sheet(W * rand(.2, .8)));
+    once("ic3", t > T.EXIT - .1, () => { sheet(W * .5); flash = 1; });
+    once("b1", t > T.SETTLE - .55, () => strike(W * rand(.12, .3), H * GROUND + 6));
+    once("b2", t > T.SETTLE - .2, () => strike(W * rand(.72, .9), H * GROUND - H * .03));
+    once("drop", t > T.DROP, () => { dropped = true; Sound.whoosh(T.IMPACT - T.DROP); });
+    once("impact", t > T.IMPACT, () => { landed = true; impact(); });
+
+    if (landed && t > nextBolt) {
+      const r = Math.random();
+      if (r < .55) {
+        let x = W * rand(.05, .95);
+        if (Math.abs(x - W / 2) < W * .18) x += W * .3 * Math.sign(x - W / 2 || 1);
+        strike(x, H * GROUND + rand(-H * .04, 8));
+        if (Math.random() < .3) setTimeout(() => strike(W * rand(.05, .95), H * GROUND - H * rand(.02, .05)), rand(120, 300));
+      } else sheet(W * rand(.1, .9));
+      nextBolt = t + (reduceMotion ? rand(8, 14) : rand(2.2, 6));
+    }
+
+    Sound.set(
+      (t < T.SETTLE ? 1 - smooth(T.EXIT, T.SETTLE, t) : 0) * (t > 0 ? 1 : 0),
+      rainA,
+    );
+
+    requestAnimationFrame(frame);
+  }
+
+  function updateTitle(t, sx, sy) {
+    if (!dropped) { title.style.opacity = 0; return; }
+    title.style.opacity = 1;
+    let y, blur = 0, stretch = 1, trail = 0;
+    if (!landed) {
+      const p = clamp01((t - T.DROP) / (T.IMPACT - T.DROP));
+      y = lerp(-titleH * 1.6 - titleTop, 0, p * p);          // gravity: accelerating
+      blur = 3 * (1 - p * .4); stretch = 1.35; trail = 1;
+    } else {
+      const p = clamp01((t - T.IMPACT) / .5);
+      y = 0;
+      stretch = 1 - Math.sin(p * Math.PI) * .09 * (1 - p);     // squash on impact
+    }
+    const k = shake;
+    title.style.top = titleTop + "px";
+    title.style.transform = `translate(calc(-50% + ${sx * .35}px), ${y + sy * .35}px) scaleY(${stretch})`;
+    title.style.transformOrigin = "50% 80%";
+    const bright = 1 + flash * .5 + heat * .6;
+    title.style.filter = `${blur > .05 ? `blur(${blur.toFixed(2)}px) ` : ""}brightness(${bright.toFixed(2)})`;
+    const ca = k * 9;                                             // chromatic split on impact
+    const glow = `0 0 ${20 + heat * 50 + flash * 40}px rgba(${255},${200 + (1 - heat) * 40},${150 + (1 - heat) * 100},${.25 + heat * .6 + flash * .3})`;
+    const parts = [glow];
+    if (ca > .3) parts.unshift(`${ca}px 0 0 rgba(255,60,60,.55)`, `${-ca}px 0 0 rgba(60,200,255,.55)`);
+    if (trail) parts.unshift("0 -30px 6px rgba(255,255,255,.3)", "0 -70px 12px rgba(255,255,255,.15)", "0 -120px 18px rgba(255,255,255,.07)");
+    title.style.textShadow = parts.join(",");
+    title.style.color = heat > .05 ? `rgb(255,${Math.round(lerp(238, 214, heat))},${Math.round(lerp(228, 170, heat))})` : "";
+  }
+
+  /* =====================================================================
+     wiring
+     ===================================================================== */
+  addEventListener("resize", () => { if (started) resize(); });
+  document.fonts.ready.then(() => started && placeTitle());
+
+  function skip() {
+    finishLoader();
+    const jump = () => {
+      if (!started) return setTimeout(jump, 50);
+      if (now_t < T.DROP - .4) {
+        t0 = performance.now() - (T.DROP - .4) * 1000;
+        Object.assign(flags, { w1: 1, ic1: 1, ic2: 1, ic3: 1, b1: 1, b2: 1 });
+      }
+    };
+    jump();
+  }
+  document.getElementById("skip").addEventListener("click", skip);
+
+  // ?at=4.5 jumps straight to that second of the scene (handy for previewing)
+  const AT = parseFloat(new URLSearchParams(location.search).get("at"));
+  if (AT >= 0) {
+    loaderDone = true; loader.remove();
+    assetsReady.then(() => { startScene(); t0 -= AT * 1000; });
+  } else if (reduceMotion) { setProgress(100); skip(); }
+  else setTimeout(() => requestAnimationFrame(tickLoader), 250);
+})();
+</script>
+</body>
+</html>
